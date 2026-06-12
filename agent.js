@@ -1005,7 +1005,7 @@ async function executeTool(name, input) {
         symbol: ticker,
         side,
         type: 'market',
-        quantity: adjustedQty,
+        quantity: String(adjustedQty),
         time_in_force: 'gfd',
       });
       if (result.error) { console.log(`  ❌ Failed: ${result.error}`); return result; }
