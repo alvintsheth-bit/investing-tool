@@ -253,24 +253,24 @@ Scraped the entire site on first run. Handles complex interactive pages:
 
 ### Context Injected at Prompt Time
 
+Only factual, non-narrative data is pre-loaded. Sam's briefings, market outlook, and portfolio positions are deliberately excluded from the initial context to prevent recency bias — the agent cannot have absorbed Sam's current views before starting its own research.
+
 | Content | Chars | Source |
 |---------|-------|--------|
 | Learning memory (signal win rates) | dynamic | signal-accuracy.json |
-| Yesterday's watchlist | dynamic | watchlist-tomorrow.json |
-| Recent trade history | dynamic | trades-log.json |
-| Today's daily briefing | up to 8,000 | Daily scrape JSON |
-| Today's trade alerts | up to 3,000 | Daily scrape JSON |
-| Current watchlist | up to 3,000 | Daily scrape JSON |
-| Current market outlook | 6,000 | market-outlook.md |
-| Last 30 daily briefings | up to 20,000 | briefings/ newest-first |
-| Sam's strategy framework | 5,000 | strategy.md |
-| Investing principles | 4,000 | investing-basics.md |
-| NASDAQ correction patterns | 4,000 | nasdaq-historical.md |
-| All 9 portfolio positions | 6,000 | portfolios/ |
-| Portfolio overview | 3,000 | portfolio-overview.md |
-| Trade history | 3,000 | trade-history.md |
+| Yesterday's watchlist + entry triggers | dynamic | watchlist-tomorrow.json |
+| Today's trade alerts (what Sam bought/sold) | up to 2,000 | Daily scrape JSON |
+| Today's watchlist (what Sam is monitoring) | up to 2,000 | Daily scrape JSON |
+| NASDAQ correction/rally patterns | 3,000 | nasdaq-historical.md (historical data) |
 
-**Sam Weiss is loaded at the BOTTOM of the prompt, labeled "VALIDATION LAYER."** The agent researches independently first, then consults Sam. This prevents anchoring.
+**What is NOT pre-loaded (to prevent anchoring):**
+- Sam's daily briefing narrative → available via `get_sam_market_outlook` tool on demand
+- Recent briefings → available via `search_sam_weiss_briefings` tool on demand
+- Market outlook → available via `get_sam_market_outlook` tool on demand
+- Portfolio positions → available via `get_sam_market_outlook` tool on demand
+- Strategy/investing-basics → available via `get_sam_market_outlook` tool on demand
+
+The only Sam content pre-loaded is **factual actions** (trade alerts = what he bought/sold, watchlist = what he's monitoring). Narrative analysis and price-level commentary are tool-gated.
 
 ### Research Philosophy (Embedded in Prompt)
 The agent is explicitly instructed:
@@ -288,16 +288,15 @@ The agent is explicitly instructed:
 
 ## 7. Signal Stack — All 11 Signals
 
-### Signal 1 — Sam Weiss Context (Validation Lens — NOT scored)
-**Tools:** `search_sam_weiss_briefings` + pre-loaded context
-**Role:** Adjusts position sizing after independent scoring is complete.
+### Signal 1 — Sam Weiss Context (Validation Lens — NOT scored, tool-gated)
+**Tools:** `search_sam_weiss_briefings`, `get_sam_market_outlook`
+**Role:** Adjusts position sizing after independent scoring is complete. Never pre-loaded.
 
-Sam's framework teaches the agent:
-- **4-Part Framework**: Buy corrections → Hedge rallies → Sell covered calls → Hold long
-- **2-Year Rule**: Never make decisions on short time horizons
-- **NASDAQ Patterns**: Corrections end <20 sessions 90%+ of the time. Every correction → 8-15% rally
-- **RSI Discipline**: Daily RSI >70 = overbought. RSI <30 = oversold/buy
-- **Segment Analysis**: Position within correction/rally determines sizing and urgency
+**Why tool-gated:** Pre-loading briefings introduces recency bias — if Sam has been talking about NVDA all week, the agent unconsciously steers toward NVDA even during "independent" research. By making Sam's content a deliberate tool call, the agent is forced to research first, then explicitly choose to consult Sam for specific tickers.
+
+`search_sam_weiss_briefings(ticker)` — searches 535+ historical briefings for Sam's view on a specific stock. Called per ticker after the agent has already scored it on 10 independent signals.
+
+`get_sam_market_outlook` — loads market-outlook.md (current macro stance), strategy.md (framework), portfolio positions, and today's briefing narrative. Called if the agent needs macro context validation.
 
 Sam modifier: bullish = full position (5%), silent = standard (3%), bearish = small (2%)
 
@@ -905,8 +904,9 @@ node robinhood-auth.js   # Authenticate Robinhood MCP
 | Scheduling | macOS launchd (4 plist jobs) |
 | Trade execution | Robinhood Agentic Trading MCP (HTTP transport) |
 
-### Why Claude Opus 4.8?
-Financial decisions require multi-step reasoning across 11 signals with conflicting indicators. Haiku is too weak. Sonnet is borderline. Opus gives the best signal synthesis quality — especially for understanding nuanced market context and applying Sam's qualitative framework to quantitative signals.
+### Model Selection by Task
+- **Analyze run (9:30am):** `claude-sonnet-4-6` — structured tool-use + multi-signal scoring. Sonnet is excellent for this: the task is well-defined (call tools in phases, apply scoring rubric, write report). Opus' extra reasoning depth adds cost without meaningfully better decisions.
+- **EOD run (4pm):** `claude-haiku-4-5-20251001` — purely formulaic: fetch prices, compute P&L, write watchlist. Haiku handles this well and is 18× cheaper than Opus.
 
 ### Why Node.js ESM?
 Started with Playwright (Node ecosystem) + Anthropic SDK. Node's native `fetch` handles all HTTP. ESM is the modern standard.
@@ -942,24 +942,18 @@ The agent uses **Claude Opus 4.8**, Anthropic's most capable (and most expensive
 
 ### Why Each Run Is Expensive
 
-**The prompt is massive.** At each session start, the system message injects:
-- 30 daily briefings × ~4,000 chars each = ~120,000 chars
-- Strategy, basics, outlook, portfolios, trade history = ~30,000 chars more
-- Total context: **50,000–80,000 tokens per session start**
+**Current architecture (optimized):**
+- Initial prompt: ~8,000 chars (trade alerts + watchlist + NASDAQ patterns + learning memory)
+- No briefings, no outlook, no portfolio positions pre-loaded — all tool-gated
+- Sam's content only enters context when the agent explicitly calls `get_sam_market_outlook` or `search_sam_weiss_briefings`
 
-**Tool results expand context.** Each tool call adds its result to the conversation. With 30 iterations, and tool results of 1,000-5,000 tokens each, the total context by iteration 20 can be **150,000+ tokens**.
+**Cost estimate per session (current):**
+- Analyze run (Sonnet, 20 iter max): ~30k tokens → ~$0.45
+- EOD run (Haiku, 12 iter max): ~15k tokens → ~$0.06
+- **~$0.51/day total** for both runs
+- **~$15/month**
 
-**Cost estimate per session:**
-- Session input tokens: ~150,000 tokens × $15/MTok = **$2.25**
-- Session output tokens: ~30,000 tokens × $75/MTok = **$2.25**
-- **~$4-5 per agent run** (analyze or eod)
-- Two runs daily × 30 days = **~$240–300/month**
-
-### How to Reduce Cost (without reducing quality)
-1. **Reduce briefings loaded**: Change `loadLatestBriefings(30)` to `loadLatestBriefings(10)` — briefings are the biggest input token consumer
-2. **Reduce max iterations**: Change `maxIter` from 30 to 15 — most sessions complete in 10-12
-3. **Use Sonnet for EOD**: EOD is less research-intensive; swap to `claude-sonnet-4-6` for the 4pm run
-4. **Cache stable KB files**: Strategy/basics/outlook don't change daily — only load them 1x/week
+**Why this is also architecturally better:** Briefings in the initial context = the agent has absorbed Sam's current narrative before its first thought. That's not independent research — it's anchored research. Tool-gating Sam's content enforces the "market first, Sam second" discipline at a structural level, not just as a prompt instruction.
 
 *Last updated: June 2026*
 *Built by Alvin Tsheth using Claude Code*
