@@ -47,7 +47,7 @@ A fully automated, personal stock research and trading agent that runs daily wit
 - **Self-learns** by computing signal win rates from trade outcomes, then injecting those accuracy statistics into the next morning's prompt
 - **Reports** end-of-day P&L, learnings, and tomorrow's watchlist — emailed via Gmail (nodemailer) at 4pm
 
-The reasoning engine is Claude Opus 4.8, running in an agentic loop (up to 30 tool-use iterations per session).
+The reasoning engine is Claude Sonnet 4.6 (analyze) and Claude Haiku 4.5 (EOD), running in agentic loops (up to 20 and 12 tool-use iterations respectively).
 
 ---
 
@@ -112,7 +112,7 @@ DAILY  4:00 PM — agent.js eod
                │ loaded as context (50-80k tokens)
    ┌───────────▼────────────────────────────────┐
    │            agent.js                        │
-   │  Claude Opus 4.8 (claude-opus-4-8)         │
+   │  Claude Sonnet 4.6 (analyze) / Haiku (EOD) │
    │  Agentic loop — up to 30 tool iterations   │
    │                                            │
    │  MEMORY INPUT:                             │
@@ -234,8 +234,8 @@ Scraped the entire site on first run. Handles complex interactive pages:
 ## 6. The Investing Agent (agent.js)
 
 **File:** `agent.js`
-**Model:** `claude-opus-4-8` (most capable reasoning)
-**Max iterations:** 30 tool-use loops per session
+**Model:** `claude-sonnet-4-6` (analyze) / `claude-haiku-4-5-20251001` (EOD)
+**Max iterations:** 20 (analyze) / 12 (EOD) tool-use loops per session
 **Max tokens per response:** 8,192
 
 ### How the Agentic Loop Works
@@ -895,7 +895,8 @@ node robinhood-auth.js   # Authenticate Robinhood MCP
 | Component | Technology |
 |-----------|-----------|
 | Runtime | Node.js v22.22.3, ESM modules |
-| AI reasoning | Claude Opus 4.8 (`claude-opus-4-8`) |
+| AI reasoning (analyze) | Claude Sonnet 4.6 (`claude-sonnet-4-6`) |
+| AI reasoning (EOD) | Claude Haiku 4.5 (`claude-haiku-4-5-20251001`) |
 | AI client | @anthropic-ai/sdk ^0.24.0 |
 | Web scraping | Playwright ^1.44.0 (headless Chromium) |
 | Config | dotenv ^16.4.5 |
@@ -936,9 +937,7 @@ Sam's site is WordPress with JavaScript-rendered dropdowns, tabs, and slides. St
 
 ## 23. Why Credits Deplete Fast
 
-The agent uses **Claude Opus 4.8**, Anthropic's most capable (and most expensive) model:
-- Input: **$15 per million tokens**
-- Output: **$75 per million tokens**
+The agent uses **Claude Sonnet 4.6** (analyze) and **Claude Haiku 4.5** (EOD) — tiered by task complexity:
 
 ### Why Each Run Is Expensive
 
