@@ -38,14 +38,14 @@
 
 A fully automated, personal stock research and trading agent that runs daily without any human intervention. It:
 
-- **Scrapes** sam-weiss.com (a paid subscription investing newsletter) daily at 6am, and rebuilds its knowledge base every Sunday — pulling briefings, trade alerts, watchlist, portfolio positions, and 18+ months of historical briefings
+- **Scrapes** sam-weiss.com (a paid subscription investing newsletter) daily at 5:30am, and rebuilds its knowledge base every Sunday — pulling briefings, trade alerts, watchlist, portfolio positions, and 18+ months of historical briefings
 - **Researches** every relevant stock across 11 independent signal sources before ever consulting Sam Weiss — doing its own independent analysis first
 - **Uses Sam Weiss as a validation layer** — after independent research, Sam's stance adjusts position sizing but does NOT contribute to the 1-10 score. This prevents over-anchoring to one viewpoint
 - **Scores** each stock 1-10 based on 10 independent signals — a score of ≥7 triggers a trade
 - **Executes** stock trades autonomously on Robinhood's dedicated Agentic Trading sub-account (account 674082664, `agentic_allowed: true`) with built-in circuit breakers
 - **Documents** every executed trade in a permanent rationale file — recording all signal verdicts, technical data, market context, Sam's stance, and 5-day outcome tracking
 - **Self-learns** by computing signal win rates from trade outcomes, then injecting those accuracy statistics into the next morning's prompt
-- **Reports** end-of-day P&L, learnings, and tomorrow's watchlist — emailed via Gmail (nodemailer) at 4pm
+- **Reports** end-of-day P&L, learnings, and tomorrow's watchlist — emailed via Gmail (nodemailer) at 1:30pm
 
 The reasoning engine is Claude Sonnet 4.6 (analyze) and Claude Haiku 4.5 (EOD), running in agentic loops (up to 20 and 12 tool-use iterations respectively).
 
@@ -59,13 +59,13 @@ SUNDAY 5:00 AM — scraper-knowledge-base.js weekly
                  • Updates output/knowledge-base/briefings/
                  • Logs to output/logs/kb-weekly.log
 
-DAILY  6:00 AM — scraper.js
+DAILY  5:30 AM — scraper.js
                  • Authenticates to sam-weiss.com with Playwright
                  • Scrapes today's daily briefing, trade alerts, watchlist
                  • Saves output/sam-weiss-YYYY-MM-DD.json
                  • Logs to output/logs/scrape.log
 
-DAILY  9:30 AM — agent.js (market open)
+DAILY  6:00 AM — agent.js (30 min before market open)
                  • Loads learning memory (signal win rates + recent trades)
                  • Loads today's scrape + 30 most recent briefings + full KB
                  • Phase 1: Independent market research (macro, sectors, VIX, F&G)
@@ -77,7 +77,11 @@ DAILY  9:30 AM — agent.js (market open)
                  • Writes output/trades/YYYY-MM-DD-TICKER-buy.md per trade
                  • Logs to output/logs/analyze.log
 
-DAILY  4:00 PM — agent.js eod
+DAILY  6:30 AM — Market opens (NYSE/NASDAQ)
+
+DAILY  1:00 PM — Market closes
+
+DAILY  1:30 PM — agent.js eod
                  • Fetches current prices for all trades from today
                  • Computes P&L, compares vs QQQ benchmark
                  • Recomputes signal accuracy from completed 5-day outcomes
@@ -95,7 +99,7 @@ DAILY  4:00 PM — agent.js eod
 ```
 ┌─────────────────────────────────────────────────────────────────────┐
 │                          macOS launchd cron                         │
-│  Sun 5am: kb-weekly  |  6am: scrape  |  9:30am: analyze  |  4pm eod│
+│  Sun 5am: kb-weekly  |  5:30am: scrape  |  6am: analyze  |  1:30pm eod│
 └──────────────┬──────────────────────────────────────────────────────┘
                │
    ┌───────────▼────────────┐
@@ -159,7 +163,7 @@ DAILY  4:00 PM — agent.js eod
 
 ## 4. Web Scraping Layer
 
-**File:** `scraper.js` — daily 6am scraper
+**File:** `scraper.js` — daily 5:30am scraper
 **File:** `scraper-knowledge-base.js` — full KB scraper + weekly updater
 
 ### Technology
@@ -169,7 +173,7 @@ DAILY  4:00 PM — agent.js eod
 - `networkidle` wait strategy + 300ms buffer after page load
 - Credentials: `SAM_WEISS_USERNAME` + `SAM_WEISS_PASSWORD` in `.env`
 
-### Daily Scraper (`scraper.js`) — 6am
+### Daily Scraper (`scraper.js`) — 5:30am
 Scrapes 4 pages each morning, saves timestamped JSON:
 1. Latest daily briefing (homepage)
 2. Current trade alerts (`/trades/`)
@@ -281,8 +285,8 @@ The agent is explicitly instructed:
 5. Execute if score ≥7 regardless of Sam's stance (with smaller size if Sam is silent/bearish)
 
 ### Modes
-- `node agent.js` — analyze + trade (9:30am)
-- `node agent.js eod` — end-of-day report (4pm)
+- `node agent.js` — analyze + trade (6:00am)
+- `node agent.js eod` — end-of-day report (1:30pm)
 
 ---
 
@@ -726,9 +730,9 @@ All 4 jobs are loaded and running:
 
 ```bash
 launchctl list | grep investing-tool
-# com.investing-tool.scrape      → 6:00 AM daily
-# com.investing-tool.analyze     → 9:30 AM daily  
-# com.investing-tool.eod         → 4:00 PM daily
+# com.investing-tool.scrape      → 5:30 AM daily
+# com.investing-tool.analyze     → 6:00 AM daily  
+# com.investing-tool.eod         → 1:30 PM daily
 # com.investing-tool.kb-weekly   → 5:00 AM every Sunday
 ```
 
@@ -741,9 +745,9 @@ Located at `~/Library/LaunchAgents/`:
 
 ### Log Files
 `output/logs/`:
-- `scrape.log` — 6am scraper output
-- `analyze.log` — 9:30am agent output
-- `eod.log` — 4pm EOD report output
+- `scrape.log` — 5:30am scraper output
+- `analyze.log` — 6:00am agent output
+- `eod.log` — 1:30pm EOD report output
 - `kb-weekly.log` — Sunday KB update output
 
 ### To manually trigger any job
@@ -791,9 +795,9 @@ investing-tool/
 │   │   └── ...
 │   │
 │   ├── logs/
-│   │   ├── scrape.log               # 6am scraper output
-│   │   ├── analyze.log              # 9:30am agent output
-│   │   ├── eod.log                  # 4pm EOD output
+│   │   ├── scrape.log               # 5:30am scraper output
+│   │   ├── analyze.log              # 6:00am agent output
+│   │   ├── eod.log                  # 1:30pm EOD output
 │   │   └── kb-weekly.log            # Sunday KB update
 │   │
 │   └── knowledge-base/
@@ -871,9 +875,9 @@ npx playwright install chromium
 
 ### Daily Usage (these run automatically via cron — manual override below)
 ```bash
-npm run scrape        # 6am — scrape today's sam-weiss.com data
-npm run analyze       # 9:30am — analyze + execute trades
-node agent.js eod     # 4pm — EOD report + email
+npm run scrape        # 5:30am — scrape today's sam-weiss.com data
+npm run analyze       # 6:00am — analyze + execute trades
+node agent.js eod     # 1:30pm — EOD report + email
 npm run run           # scrape + analyze back-to-back
 ```
 
@@ -906,8 +910,8 @@ node robinhood-auth.js   # Authenticate Robinhood MCP
 | Trade execution | Robinhood Agentic Trading MCP (HTTP transport) |
 
 ### Model Selection by Task
-- **Analyze run (9:30am):** `claude-sonnet-4-6` — structured tool-use + multi-signal scoring. Sonnet is excellent for this: the task is well-defined (call tools in phases, apply scoring rubric, write report). Opus' extra reasoning depth adds cost without meaningfully better decisions.
-- **EOD run (4pm):** `claude-haiku-4-5-20251001` — purely formulaic: fetch prices, compute P&L, write watchlist. Haiku handles this well and is 18× cheaper than Opus.
+- **Analyze run (6:00am):** `claude-sonnet-4-6` — structured tool-use + multi-signal scoring. Sonnet is excellent for this: the task is well-defined (call tools in phases, apply scoring rubric, write report). Opus' extra reasoning depth adds cost without meaningfully better decisions.
+- **EOD run (1:30pm):** `claude-haiku-4-5-20251001` — purely formulaic: fetch prices, compute P&L, write watchlist. Haiku handles this well and is 18× cheaper than Opus.
 
 ### Why Node.js ESM?
 Started with Playwright (Node ecosystem) + Anthropic SDK. Node's native `fetch` handles all HTTP. ESM is the modern standard.
