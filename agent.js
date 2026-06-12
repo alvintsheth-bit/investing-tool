@@ -823,8 +823,13 @@ const tools = [
   },
   {
     name: 'search_sam_weiss_briefings',
-    description: 'Search through all 518 historical Sam Weiss daily briefings for mentions of a specific ticker or topic. Returns up to 10 matching briefings with excerpts. Use to understand Sam\'s historical view on a stock.',
+    description: 'Search through all 518 historical Sam Weiss daily briefings for mentions of a specific ticker or topic. Returns up to 10 matching briefings with excerpts. Use AFTER forming your own thesis to check Sam\'s historical view on a stock.',
     input_schema: { type: 'object', properties: { ticker: { type: 'string', description: 'Ticker or keyword to search briefings for' } }, required: ['ticker'] },
+  },
+  {
+    name: 'get_sam_market_outlook',
+    description: 'Load Sam Weiss\'s current macro framework on demand: market outlook (near/intermediate/long-term), investing strategy, and portfolio positions. Call this in Phase 4 if you need to understand his current macro stance or validate a macro thesis. Do NOT call at session start — research first.',
+    input_schema: { type: 'object', properties: {}, required: [] },
   },
   {
     name: 'get_notable_mentions',
@@ -935,6 +940,13 @@ async function executeTool(name, input) {
       return { ticker: input.ticker, matchCount: matches.length, matches };
     }
     case 'get_notable_mentions':   return getNotableMentions(input.ticker);
+    case 'get_sam_market_outlook':
+      return {
+        marketOutlook: loadKBFile('market-outlook.md', 6000),
+        strategy: loadKBFile('strategy.md', 4000),
+        portfolioPositions: loadPortfolios().slice(0, 4000),
+        latestBriefing: loadLatestBriefings(1).slice(0, 4000),
+      };
     case 'web_search':             return generalWebSearch(input.query);
     case 'get_portfolio': {
       const acct = await rhGetAccountNumber();
@@ -1086,228 +1098,115 @@ function buildPrompt() {
   const dailyScrape = loadDailyScrape();
   const today = getDateStr(0);
 
-  const todayBriefing = dailyScrape?.pages?.find(p => p.label === 'daily-briefing-latest')?.content
-    || loadLatestBriefings(1).slice(0, 6000);
-  const todayTrades = dailyScrape?.pages?.find(p => p.label === 'trades')?.content || '';
+  const todayTrades   = dailyScrape?.pages?.find(p => p.label === 'trades')?.content || '';
   const todayWatchlist = dailyScrape?.pages?.find(p => p.label === 'trade-watch')?.content
     || loadKBFile('trade-watchlist.md', 2000);
 
   return `You are a personal investing agent for Alvint. Today is ${today}.
 
-Your job: do independent, broad market research first — then validate findings against Sam Weiss's fundamentals. Never anchor to Sam's view before you've done your own analysis.
-
 ${buildLearningsContext()}
 
 ═══════════════════════════════════════════════════════════════════════
-RESEARCH PHILOSOPHY — READ THIS FIRST
+RESEARCH PHILOSOPHY
 ═══════════════════════════════════════════════════════════════════════
 
-You have two sources of intelligence:
+Do independent market research first. Consult Sam Weiss only after you have
+formed your own thesis — and only via tools, never from memory.
 
-1. **INDEPENDENT MARKET RESEARCH** — macro, technicals, sector rotation, news, notable
-   mentions, insider activity, earnings, sentiment, web search. These are objective,
-   real-time signals from the market itself.
+CORRECT ORDER:
+  Phase 1 → Market context (macro, VIX, sectors, earnings risk)
+  Phase 2 → Independent candidate discovery (web search, sector leaders)
+  Phase 3 → Deep signal research per candidate (all 10 signals)
+  Phase 4 → Sam validation (search_sam_weiss_briefings per ticker,
+             get_sam_market_outlook for macro context if needed)
+  Phase 5 → Score, size, execute
 
-2. **SAM WEISS INTELLIGENCE** — a professional investor's framework, daily briefings,
-   and 18+ months of market analysis. Loaded at the END of this prompt.
-
-THE CORRECT ORDER:
-  → Research the market independently (Phases 1-3)
-  → Form your own thesis on the best opportunities
-  → THEN cross-check: does Sam agree or disagree?
-  → His agreement strengthens conviction. His disagreement is a flag, not a veto.
-  → A stock that looks great on 8/10 independent signals beats a Sam-mentioned
-    stock with only 3/10 independent signals every time.
-
-WHAT TO AVOID:
-  ✗ Starting with "Sam likes NVDA, so let me research NVDA"
-  ✗ Treating Sam's watchlist as the ticker list — he is one signal, not the thesis
-  ✗ Anchoring price targets to Sam's cited levels without independent verification
-  ✗ Skipping sectors Sam doesn't cover (energy, financials, industrials can all trade)
+RULES:
+  ✗ Do not start with Sam's watchlist or briefings — research first
+  ✗ Do not anchor price targets to Sam's levels without independent verification
+  ✗ Do not skip sectors Sam doesn't cover — the whole market is fair game
+  ✓ Sam bullish on your independent find → full position (5%)
+  ✓ Sam silent → standard position (3%)
+  ✓ Sam bearish on your find → small position (2%) + flag why
 
 ═══════════════════════════════════════════════════════════════════════
-TOOLS AVAILABLE
+TOOLS
 ═══════════════════════════════════════════════════════════════════════
 
-  get_portfolio              → current holdings, buying power, P&L
+MARKET DATA
+  get_portfolio              → holdings, buying power, daily P&L
   get_fear_greed_vix         → Fear & Greed score, VIX, SPY/QQQ/IWM
-  get_macro_indicators       → Fed, CPI, PCE, treasury yields, economic calendar
-  get_sector_rotation        → 11 S&P sectors ranked by 1D performance
-  get_earnings_calendar      → earnings in next 14 days (avoid these!)
-  get_market_data            → price, RSI-14, 52W high/low, volume, P/E, beta, analyst ratings
-  get_news                   → 8 recent financial news articles per ticker
-  get_notable_mentions       → Trump/White House, CEO shoutouts, Congressional trades,
-                               major investor positions, analyst upgrades
-  get_insider_activity       → C-suite buying/selling + institutional holders
-  get_earnings_info          → earnings surprise history (beat/miss last 4 quarters)
-  get_reddit_sentiment       → r/wallstreetbets, r/stocks, r/investing + StockTwits
-  search_sam_weiss_briefings → search 535 historical briefings for Sam's view on a ticker
-  web_search                 → DuckDuckGo search for any catalyst or macro news
-  place_trade                → execute buy/sell on Robinhood (circuit breakers enforced)
+  get_macro_indicators       → treasury yields, Fed/CPI context
+  get_sector_rotation        → 11 sectors ranked by 1D performance
+  get_earnings_calendar      → earnings in next 14 days (avoid these)
+  get_market_data [ticker]   → price, RSI-14, 52W range, volume, P/E, beta
+  get_news [ticker]          → recent news via web search
+  get_notable_mentions [t]   → Trump/White House, CEO shoutouts, Congress,
+                               Buffett/Ackman/Cathie Wood, analyst upgrades
+  get_insider_activity [t]   → C-suite buying/selling (SEC Form 4 search)
+  get_earnings_info [t]      → beat/miss history last 4 quarters
+  get_reddit_sentiment [t]   → WSB + r/stocks + r/investing + StockTwits
+  web_search [query]         → DuckDuckGo for any ad-hoc research
+
+SAM WEISS (use deliberately, after independent research only)
+  search_sam_weiss_briefings [ticker] → Sam's historical view on a specific stock
+  get_sam_market_outlook              → Sam's current macro stance, framework,
+                                        and portfolio positions (loads on demand)
+
+EXECUTION
+  place_trade                → execute on Robinhood (circuit breakers enforced)
 
 ═══════════════════════════════════════════════════════════════════════
-EXECUTION ORDER — MARKET FIRST, SAM SECOND
+SCORING (out of 10)
 ═══════════════════════════════════════════════════════════════════════
 
-PHASE 1 — INDEPENDENT MARKET CONTEXT
-  1. get_portfolio           → current positions + buying power
-  2. get_fear_greed_vix      → overall market temperature (VIX, F&G index, SPY/QQQ)
-  3. get_macro_indicators    → Fed stance, CPI trend, yield curve, upcoming events
-  4. get_sector_rotation     → which of 11 sectors are leading/lagging today
-  5. get_earnings_calendar   → who's reporting in 14 days — these are off-limits
+  +1  rsi_oversold:          RSI <50 trending up, or RSI <30
+  +1  macro_tailwind:        rate/inflation environment favors this sector
+  +1  sector_leading:        sector leading today with multi-day momentum
+  +1  news_catalyst:         clear positive catalyst last 48-72 hrs
+  +1  notable_mention:       Trump order / CEO shoutout / congress buy / major investor
+  +1  insider_buying:        C-suite or board buying own stock (not options exercise)
+  +1  institutional_growing: active funds accumulating (not passive index)
+  +1  earnings_beater:       beat EPS 3+ of last 4 quarters
+  +1  contrarian_social:     bears dominating a fundamentally strong stock
+  +1  analyst_conviction:    2+ recent upgrades or significant price target raise
 
-PHASE 2 — INDEPENDENT TICKER DISCOVERY (no Sam yet)
-  From Phase 1 data, identify candidates independently:
-  - Sector ETF leaders: what are the top individual stocks IN the leading sectors?
-  - web_search "top gaining stocks today sector" for the leading sectors
-  - web_search "stocks making new 52 week highs today" for momentum
-  - web_search "analyst upgrades today stocks" for fresh institutional conviction
-  - web_search "insider buying this week stocks" for smart money
-  - web_search "Trump executive order stocks benefiting today" for political catalysts
-  - web_search "earnings beat stocks this week" for momentum plays
-  Build a candidate list of 8-15 tickers from MARKET signals before consulting Sam at all.
+  -2  earnings <5 days away
+  -1  RSI >70 (overbought)
+  -1  macro headwind for sector
+  -1  heavy insider selling
+  -1  extreme Reddit bullishness (crowded trade)
 
-PHASE 3 — DEEP SIGNAL RESEARCH (per candidate)
-  For each candidate from Phase 2:
-  a. get_market_data        → RSI, 52W range, volume vs avg, P/E, beta
-  b. get_news               → recent catalysts and headlines
-  c. get_notable_mentions   → Trump, Jensen, Elon, Pelosi, Buffett, analyst moves
-  d. get_insider_activity   → C-suite buying? Hedge funds accumulating?
-  e. get_earnings_info      → consistent beater?
-  f. get_reddit_sentiment   → crowded or contrarian?
-
-PHASE 4 — SAM WEISS VALIDATION (cross-check your thesis)
-  Now — and only now — bring in Sam's intelligence:
-  g. search_sam_weiss_briefings for each high-scoring candidate
-  Results mean:
-  - Sam bullish on a stock you found independently → STRONG CONFIRMATION (+conviction)
-  - Sam bearish on a stock you found independently → INVESTIGATE WHY (flag, not veto)
-  - Sam bullish on something not in your list → add it, but score it on its own merits
-  - Sam silent → proceed on your independent signals alone
-
-PHASE 5 — SCORE & EXECUTE
-  Score each ticker 1-10 (see scoring system below).
-  For score ≥7: place_trade with the signals object filled in.
-  For score 5-6: note in output as tomorrow's watchlist.
+  ≥7 → execute | 5-6 → watchlist | <5 → avoid
 
 ═══════════════════════════════════════════════════════════════════════
-SCORING SYSTEM (out of 10) — ALL INDEPENDENT SIGNALS
+TRADING RULES
 ═══════════════════════════════════════════════════════════════════════
 
-Each signal is worth +1 if bullish. Sam's view does NOT add a point — it adjusts
-your confidence in signals already scored, not the score itself.
-
-  +1  RSI <50 and trending up (room to run without being overbought)
-  +1  Macro tailwind (rate/inflation environment favors this sector)
-  +1  Sector leading today with multi-day momentum (not a one-day bounce)
-  +1  Clear news catalyst in last 48-72 hrs (product, contract, approval, deal)
-  +1  Notable mention: Trump order, CEO shoutout, congressional buy, major investor
-  +1  Insider buying (C-suite or board, not options exercise)
-  +1  Institutional accumulation (active funds, not passive index)
-  +1  Consistent earnings beater (3+ of last 4 quarters)
-  +1  Contrarian social: bears dominating a fundamentally strong stock
-  +1  Strong analyst conviction: 2+ recent upgrades or significant PT raise
-
-Deductions:
-  -2  Earnings in next 5 days (binary event risk)
-  -1  RSI >70 (overbought — bad risk/reward)
-  -1  Macro headwind for this sector
-  -1  Heavy recent insider selling
-  -1  Extreme Reddit bullishness (crowded trade)
-
-Sam modifier (not scored, but adjusts position size):
-  Sam bullish + score ≥7 → full position (up to 5% portfolio)
-  Sam silent  + score ≥7 → standard position (up to 3%)
-  Sam bearish + score ≥7 → smaller position (up to 2%) + extra scrutiny
-
-Threshold: ≥7 = execute | 5-6 = watchlist | <5 = avoid
+  - Max 5% of portfolio per position (auto-enforced)
+  - Stop trading if daily loss >5% (auto-enforced)
+  - Stocks only — no ETFs, no options
+  - Market orders, GFD
+  - Call get_portfolio first to know your buying power
+  - No trades with earnings in <5 days
 
 ═══════════════════════════════════════════════════════════════════════
-TRADING RULES (ENFORCED BY CIRCUIT BREAKERS)
+SAM'S ACTIONS TODAY (factual — not his narrative analysis)
 ═══════════════════════════════════════════════════════════════════════
 
-- Max 5% of portfolio per trade (auto-adjusted)
-- Stop all trading if daily loss exceeds 5%
-- Stocks only — no options, no ETFs
-- Market orders during market hours only
-- Always call get_portfolio before sizing trades
-- Check earnings calendar — no trades with earnings in <5 days
+These are what Sam is actually buying/selling/watching today.
+They are facts, not framing — do not let them anchor your research direction.
+
+### TRADE ALERTS (what Sam executed today)
+${todayTrades.slice(0, 2000) || '(none scraped — check output/logs/scrape.log)'}
+
+### WATCHLIST (what Sam is monitoring)
+${todayWatchlist.slice(0, 2000) || '(none scraped)'}
 
 ═══════════════════════════════════════════════════════════════════════
-OUTPUT FORMAT
+NASDAQ CORRECTION/RALLY REFERENCE (2007-2025)
 ═══════════════════════════════════════════════════════════════════════
 
-## MARKET OVERVIEW
-- Fear & Greed: [score/rating/trend]
-- VIX: [level] — [interpretation]
-- SPY/QQQ/IWM: [% changes + context]
-- Fed stance, CPI trend, yield curve signal
-
-## SECTOR ROTATION
-| Sector | ETF | 1D % | vs 52W High | Trend | Signal |
-
-## INDEPENDENT CANDIDATE LIST (from Phase 2 web research)
-List all tickers surfaced before Sam was consulted, with source.
-
-## SIGNAL SUMMARY TABLE
-| Ticker | Price | RSI | 52W% | Macro | Sector | News | Mention | Insider | Earnings | Reddit | Sam? | Score |
-
-## TRADES EXECUTED
-| Ticker | Side | Qty | Price | Score | Key signals |
-
-## TOP RECOMMENDATIONS (Score ≥5)
-**[TICKER]** — BUY/WATCH | Score: [x/10] | Sam: [agrees/disagrees/silent]
-- Independent thesis: [why this stock, from market signals alone]
-- Technical: RSI [x], [x]% from 52W high, volume [vs avg]
-- Macro fit: [tailwind/headwind and why]
-- Sector: [leading/lagging]
-- News catalyst: [specific headline or "none"]
-- Notable mention: [who said what, or "none"]
-- Insider: [buying/selling/neutral]
-- Earnings: [next date] + [beat track record]
-- Reddit/Social: [sentiment + contrarian reading]
-- Sam validation: [what Sam says about this stock, or "not mentioned"]
-- Entry: [specific price or trigger]
-- Position size: [% — full/standard/small based on Sam modifier]
-- Invalidation: [what would make this thesis wrong]
-
-## WATCHLIST (Score 5-6)
-
-## EARNINGS RISK CALENDAR
-
-## MACRO ALERTS (next Fed/CPI/PCE dates)
-
-═══════════════════════════════════════════════════════════════════════
-SAM WEISS INTELLIGENCE — VALIDATION LAYER (consult after Phase 3)
-═══════════════════════════════════════════════════════════════════════
-
-Sam Weiss is a professional investor whose analysis informs your risk sizing and
-thesis validation — not your ticker selection. His framework:
-  • Buy during corrections, hedge during rallies, sell covered calls, hold long-term
-  • 2-year rule: always prepared to hold 2 years
-  • NASDAQ corrections: end <20 sessions 90%+ of the time, post-correction rally 8-15%
-  • RSI >70 = overbought, <30 = oversold
-  • Quality over speculation: buy companies that survive any 2-year downturn
-
-### TODAY'S DAILY BRIEFING (Sam)
-${todayBriefing.slice(0, 5000)}
-
-### TODAY'S TRADE ALERTS
-${todayTrades.slice(0, 2000)}
-
-### TODAY'S WATCHLIST
-${todayWatchlist.slice(0, 2000)}
-
-### MARKET OUTLOOK (Sam's Near/Intermediate/Long-Term View)
-${loadKBFile('market-outlook.md', 4000)}
-
-### LAST 14 DAYS OF BRIEFINGS
-${loadLatestBriefings(5).slice(0, 6000)}
-
-### PORTFOLIO POSITIONS (what Sam currently holds)
-${loadPortfolios().slice(0, 4000)}
-
-### NASDAQ CORRECTION/RALLY PATTERNS (2007-2025)
 ${loadKBFile('nasdaq-historical.md', 3000)}`;
 }
 
@@ -1381,7 +1280,7 @@ async function generateEODReport() {
   // All open positions
   const openTrades = log.trades.filter(t => t.open);
 
-  const eodTools = tools.filter(t => ['get_market_data', 'get_news', 'get_fear_greed_vix', 'get_sector_rotation', 'save_tomorrow_watchlist'].includes(t.name));
+  const eodTools = tools.filter(t => ['get_market_data', 'get_news', 'get_fear_greed_vix', 'get_sector_rotation', 'get_sam_market_outlook', 'search_sam_weiss_briefings', 'save_tomorrow_watchlist'].includes(t.name));
 
   const prompt = `You are generating the end-of-day investing report for ${today}.
 
@@ -1404,8 +1303,12 @@ ${JSON.stringify(portfolio, null, 2)}
 - Leading sectors: ${JSON.stringify(sectors?.leadingSectors)}
 - Lagging sectors: ${JSON.stringify(sectors?.laggingSectors)}
 
-## SAM WEISS CONTEXT
-${loadLatestBriefings(3).slice(0, 4000)}
+## SAM WEISS FRAMEWORK (for scoring alignment)
+  • Buy during corrections, hedge during rallies, sell covered calls, hold long-term
+  • 2-year rule: always prepared to hold 2 years
+  • NASDAQ corrections end <20 sessions 90%+ of the time; post-correction rally 8-15%
+  • RSI >70 = overbought, <30 = oversold/buy
+  • Quality over speculation: buy companies that survive any 2-year downturn
 
 ## INSTRUCTIONS
 
@@ -1456,7 +1359,7 @@ Rate today 1-10: alignment with Sam's 4-part framework.
   while (iterations < 12) {
     iterations++;
     response = await client.messages.create({
-      model: 'claude-sonnet-4-6',
+      model: 'claude-haiku-4-5-20251001',
       max_tokens: 6000,
       tools: eodTools,
       messages,
