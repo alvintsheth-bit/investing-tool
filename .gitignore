@@ -1,4 +1,5 @@
 .env
+.env.save
 node_modules/
 screenshots/
 output/
