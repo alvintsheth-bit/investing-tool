@@ -1302,7 +1302,7 @@ ${todayWatchlist.slice(0, 2000)}
 ${loadKBFile('market-outlook.md', 4000)}
 
 ### LAST 14 DAYS OF BRIEFINGS
-${loadLatestBriefings(14).slice(0, 10000)}
+${loadLatestBriefings(5).slice(0, 6000)}
 
 ### PORTFOLIO POSITIONS (what Sam currently holds)
 ${loadPortfolios().slice(0, 4000)}
@@ -1453,10 +1453,10 @@ Rate today 1-10: alignment with Sam's 4-part framework.
   let response;
   let iterations = 0;
 
-  while (iterations < 15) {
+  while (iterations < 12) {
     iterations++;
     response = await client.messages.create({
-      model: 'claude-opus-4-8',
+      model: 'claude-sonnet-4-6',
       max_tokens: 6000,
       tools: eodTools,
       messages,
@@ -1499,10 +1499,10 @@ async function run() {
   let response;
   let iterations = 0;
 
-  while (iterations < 30) {
+  while (iterations < 20) {
     iterations++;
     response = await client.messages.create({
-      model: 'claude-opus-4-8',
+      model: 'claude-sonnet-4-6',
       max_tokens: 8192,
       tools,
       messages,
