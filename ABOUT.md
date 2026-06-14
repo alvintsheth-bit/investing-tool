@@ -985,7 +985,7 @@ The agent uses **Claude Sonnet 4.6** (analyze) and **Claude Haiku 4.5** (EOD) �
 
 **Cost estimate per session (current):**
 - Analyze run (Sonnet, 20 iter max): ~30k tokens → ~$0.45
-- EOD run (Haiku, 12 iter max): ~15k tokens → ~$0.06
+- EOD run (Haiku, 10 iter max): ~15k tokens → ~$0.06
 - **~$0.51/day total** for both runs
 - **~$15/month**
 
