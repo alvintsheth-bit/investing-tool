@@ -443,7 +443,8 @@ Each trade gets a dedicated markdown file documenting:
 - **Technical snapshot** — RSI, 52W position, MA50/200, volume
 - **All 10 signal verdicts** — ✅ or ❌ for each signal
 - **Stop/target levels** — ATR-14 at entry; opening-range stop updated after 6:45am PT if OR low is tighter (never loosens); immediate exit if price already below new OR stop when check fires
-- **Fill price confirmation** — live mode polls broker post-order for actual fill; slippage logged if >2%
+- **Fill price confirmation** — live mode polls broker post-order for actual fill; slippage always logged, warning at >2%
+  > **Known gap (item 36, not yet implemented):** the 2% warning threshold is too loose — it can exceed the entire 1–4% ATR stop range, meaning a trade could be stopped out before the thesis is even tested. The fix (tighten to ~0.5%, or block the trade if slippage > half the stop distance) is deferred but named.
 - **Order state machine** — every trade tracks explicit states with timestamps:
   `CANDIDATE → ORDER_SUBMITTED → ORDER_PENDING → FILLED → PROTECTED → EXIT_PENDING → CLOSED`
   Stop/target only enforced once `PROTECTED`. Entry slippage computed at `FILLED` state from confirmed fill price.
