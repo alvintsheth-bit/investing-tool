@@ -8,9 +8,12 @@
     "scrape:kb": "node scraper-knowledge-base.js full",
     "scrape:weekly": "node scraper-knowledge-base.js weekly",
     "scrape:fix": "node scraper-knowledge-base.js fix",
-    "analyze": "node agent.js",
+    "scan": "node agent.js scan",
+    "check": "node agent.js check",
+    "force-close": "node agent.js force-close",
     "eod": "node agent.js eod",
-    "run": "node scraper.js && node agent.js"
+    "analyze": "node agent.js scan",
+    "run": "node scraper.js && node agent.js scan"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.24.0",
