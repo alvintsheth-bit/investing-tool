@@ -115,7 +115,16 @@ async function main() {
     results.push(`❌ Positions    ${openCount} still open: ${tickers}`);
   }
 
-  // 5. Force-close log touched after 12:45pm (evidence it fired)
+  // 5. Exit-daemon log touched today (evidence it ran)
+  const daemonLog = join(OUTPUT_DIR, 'logs', 'exit-daemon.log');
+  if (fileTouchedAfter(daemonLog, 6.4)) {
+    results.push('✅ Exit-daemon  log updated today (started ~6:25am)');
+  } else {
+    failures.push('❌ Exit-daemon  exit-daemon.log NOT updated today — daemon may not have fired');
+    results.push('❌ Exit-daemon  log not updated today');
+  }
+
+  // 6. Force-close log touched after 12:45pm (failsafe ran)
   const fcLog = join(OUTPUT_DIR, 'logs', 'force-close.log');
   if (fileTouchedAfter(fcLog, 12.75)) {
     results.push('✅ Force-close  log updated after 12:45pm');
