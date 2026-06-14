@@ -2,7 +2,7 @@
 
 **Owner:** Alvin Tsheth (alvintsheth@gmail.com)
 **Built:** June 2026
-**Status:** Fully operational — Robinhood auth ✅ | Gmail email ✅ | Daily cron ✅ | Self-learning ✅
+**Status:** Fully operational — Robinhood auth ✅ | Gmail email ✅ | Daily cron ✅ | Self-learning ✅ | Day-trade mode ✅ | DRY_RUN=true (paper trading until cycle verified)
 
 ---
 
@@ -36,18 +36,18 @@
 
 ## 1. What This Is
 
-A fully automated, personal stock research and trading agent that runs daily without any human intervention. It:
+A fully automated personal **day-trading** agent that runs a complete intraday cycle — scan, monitor, force-close, report — without human intervention. It:
 
-- **Scrapes** sam-weiss.com (a paid subscription investing newsletter) daily at 5:30am, and rebuilds its knowledge base every Sunday — pulling briefings, trade alerts, watchlist, portfolio positions, and 18+ months of historical briefings
-- **Researches** every relevant stock across 11 independent signal sources before ever consulting Sam Weiss — doing its own independent analysis first
-- **Uses Sam Weiss as a validation layer** — after independent research, Sam's stance adjusts position sizing but does NOT contribute to the 1-10 score. This prevents over-anchoring to one viewpoint
-- **Scores** each stock 1-10 based on 10 independent signals — a score of ≥7 triggers a trade
-- **Executes** stock trades autonomously on Robinhood's dedicated Agentic Trading sub-account (account 674082664, `agentic_allowed: true`) with built-in circuit breakers
-- **Documents** every executed trade in a permanent rationale file — recording all signal verdicts, technical data, market context, Sam's stance, and 5-day outcome tracking
-- **Self-learns** by computing signal win rates from trade outcomes, then injecting those accuracy statistics into the next morning's prompt
-- **Reports** end-of-day P&L, learnings, and tomorrow's watchlist — emailed via Gmail (nodemailer) at 1:30pm
+- **Scrapes** sam-weiss.com daily at 5:30am for trade alerts, watchlist, and briefings. Rebuilds the full knowledge base every Sunday
+- **Scans** pre-market gappers at 6:00am (30 min before open), scoring candidates using a logistic regression model trained on historical signal outcomes
+- **Executes** fractional-share, dollar-denominated market orders on Robinhood's Agentic Trading sub-account (account 674082664) — max 2 concurrent positions, 17.5% of balance per trade
+- **Monitors** open positions at 8:00am, 9:30am, and 11:00am — exits on stop/target hits or thesis-break events (Haiku judges borderline cases)
+- **Force-closes** all open positions at 12:45pm PT (15 min before 1pm PT market close) with pure code — no Claude call
+- **Trains** a logistic regression model at EOD on all closed trades (features: 10 signal binaries + continuous values, L2 regularized, 80/20 blended with prior day's weights)
+- **Reports** daily realized P&L vs QQQ benchmark + learnings — emailed at 1:30pm PT
+- **DRY_RUN mode** (default `true`) logs all intended orders without submitting — set `DRY_RUN=false` in `.env` to go live
 
-The reasoning engine is Claude Sonnet 4.6 (analyze) and Claude Haiku 4.5 (EOD), running in agentic loops (up to 20 and 12 tool-use iterations respectively).
+The reasoning engine is Claude Sonnet 4.6 (scan) and Claude Haiku 4.5 (EOD + judgment calls), running in agentic loops (up to 20 and 10 iterations respectively).
 
 ---
 
@@ -65,30 +65,44 @@ DAILY  5:30 AM — scraper.js
                  • Saves output/sam-weiss-YYYY-MM-DD.json
                  • Logs to output/logs/scrape.log
 
-DAILY  6:00 AM — agent.js (30 min before market open)
-                 • Loads learning memory (signal win rates + recent trades)
-                 • Loads today's scrape + 30 most recent briefings + full KB
-                 • Phase 1: Independent market research (macro, sectors, VIX, F&G)
-                 • Phase 2: Web search for candidate discovery (before Sam)
-                 • Phase 3: Deep research per ticker (all 11 signals)
-                 • Phase 4: Scoring, Sam validation, position sizing
-                 • Phase 5: Execute trades ≥7 score via Robinhood MCP
-                 • Writes output/recommendations-YYYY-MM-DD.md
-                 • Writes output/trades/YYYY-MM-DD-TICKER-buy.md per trade
+DAILY  6:00 AM — agent.js scan (30 min before open, Claude Sonnet)
+                 • Pre-flight: verify account balance, DRY_RUN status, holiday check
+                 • Phase 1: VIX, Fear & Greed, sector pre-market moves (sets risk appetite)
+                 • Phase 2: Discover pre-market gappers (>2% gap, RVOL >2x)
+                 • Phase 3: Screen each — get_premarket_data (gap%, RVOL, ATR-14, stop/target)
+                 •           news catalyst, Reddit overnight chatter, notable mentions
+                 • Phase 4: Sam validation (briefing search + outlook on demand)
+                 • Phase 5: Execute if P(win) > 0.55, log to trades-open.json
+                 • Entry window: 6:00–10:00am PT only. No buys after 10am PT.
                  • Logs to output/logs/analyze.log
 
 DAILY  6:30 AM — Market opens (NYSE/NASDAQ)
 
+DAILY  8:00 AM — agent.js check (pure code + Haiku for judgment)
+                 • Fetch current price for each open position
+                 • Stop hit → market sell, log, remove from trades-open.json
+                 • Target hit → market sell, log, done
+                 • Thesis-break check (VIX spike >15%, negative news halt) → Haiku decides
+                 • Logs to output/logs/check.log
+
+DAILY  9:30 AM — agent.js check (same logic)
+
+DAILY 11:00 AM — agent.js check (same logic)
+
+DAILY 12:45 PM — agent.js force-close (pure code, no Claude)
+                 • Hard market sell on every position still open — no exceptions
+                 • Skipped on early-close days (Nov 27, Dec 24)
+                 • Logs to output/logs/force-close.log
+
 DAILY  1:00 PM — Market closes
 
-DAILY  1:30 PM — agent.js eod
-                 • Fetches current prices for all trades from today
-                 • Computes P&L, compares vs QQQ benchmark
-                 • Recomputes signal accuracy from completed 5-day outcomes
-                 • Generates EOD report with learnings + tomorrow's watchlist
-                 • Saves output/watchlist-tomorrow.json
-                 • Writes output/eod-report-YYYY-MM-DD.md
-                 • Sends email to alvintsheth@gmail.com via Gmail (nodemailer)
+DAILY  1:30 PM — agent.js eod (Claude Haiku)
+                 • Retrain logistic regression on all closed trades (60-trade minimum)
+                 • 80/20 blend new coefficients with yesterday's → signal-weights.json
+                 • Walk-forward validation: this week vs last week accuracy
+                 • Generate EOD report: P&L vs QQQ + learnings (2 sections only)
+                 • Save tomorrow's watchlist (gap candidates to re-screen)
+                 • Email to alvintsheth@gmail.com
                  • Logs to output/logs/eod.log
 ```
 
@@ -99,7 +113,7 @@ DAILY  1:30 PM — agent.js eod
 ```
 ┌─────────────────────────────────────────────────────────────────────┐
 │                          macOS launchd cron                         │
-│  Sun 5am: kb-weekly  |  5:30am: scrape  |  6am: analyze  |  1:30pm eod│
+│  Sun 5am: kb-weekly  |  5:30am: scrape  |  6am: scan  |  8/9:30/11am: check  |  12:45pm: force-close  |  1:30pm: eod│
 └──────────────┬──────────────────────────────────────────────────────┘
                │
    ┌───────────▼────────────┐
@@ -290,166 +304,85 @@ The agent is explicitly instructed:
 
 ---
 
-## 7. Signal Stack — All 11 Signals
+## 7. Signal Stack — 10 Day-Trading Signals
 
-### Signal 1 — Sam Weiss Context (Validation Lens — NOT scored, tool-gated)
-**Tools:** `search_sam_weiss_briefings`, `get_sam_market_outlook`
-**Role:** Adjusts position sizing after independent scoring is complete. Never pre-loaded.
+All 10 signals feed a logistic regression model. Until 60 trades of history exist, equal-weight scoring is used (P(win) = active signals / 10).
 
-**Why tool-gated:** Pre-loading briefings introduces recency bias — if Sam has been talking about NVDA all week, the agent unconsciously steers toward NVDA even during "independent" research. By making Sam's content a deliberate tool call, the agent is forced to research first, then explicitly choose to consult Sam for specific tickers.
+### Primary Signals (day-trade specific)
 
-`search_sam_weiss_briefings(ticker)` — searches 535+ historical briefings for Sam's view on a specific stock. Called per ticker after the agent has already scored it on 10 independent signals.
+**`premarket_gap_up`** — Primary entry filter
+Gap >2% pre-market on elevated volume. Computed from Yahoo Finance `preMarketPrice` vs FMP previous close.
+Formula: `(preMarketPrice - prevClose) / prevClose * 100 > 2`
 
-`get_sam_market_outlook` — loads market-outlook.md (current macro stance), strategy.md (framework), portfolio positions, and today's briefing narrative. Called if the agent needs macro context validation.
+**`rvol_spike`** — Relative Volume
+Pre-market volume >2× the 30-day daily average × 0.08 (pre-market is ~8% of daily session).
+High RVOL = institutional activity, not retail noise.
 
-Sam modifier: bullish = full position (5%), silent = standard (3%), bearish = small (2%)
+**`gap_fill_low_prob`** — Gap sustainability
+Gap >5%: historically holds intraday (low fill probability = momentum trade).
+Gap 2-5%: medium probability.
+Gap <2%: high fill probability, avoid.
+Derived from NASDAQ historical patterns in `output/knowledge-base/nasdaq-historical.md`.
 
-### Signal 2 — Technical Analysis
-**Tool:** `get_market_data`
-**Sources:** FMP `stable/quote`, `stable/profile`, `stable/historical-price-eod/light` (RSI computed)
+### Context Signals
 
-Data returned:
-- **Price + 1D change** — direction vs market
-- **RSI-14** — computed from 60 days of closing prices using Wilder's smoothing method
-- **52-week high/low** — position within yearly range
-- **% from 52W high/low** — how extended vs. how discounted
-- **MA50/MA200** — from FMP quote directly
-- **Volume vs 20-day average** — computed from historical; >150% = institutional conviction
-- **P/E ratio** — from `stable/key-metrics-ttm`
-- **Beta** — from `stable/profile`
+**`macro_tailwind`** — VIX/F&G sets risk appetite. Low VIX (<18), rising F&G = favorable. High VIX = tighten stops.
 
-**Score +1 if:** RSI < 50 and momentum turning up, or RSI < 30 (oversold)
+**`sector_leading`** — Sector ETF up pre-market. Stock in leading sector = momentum support.
 
-### Signal 3 — Macro Environment
-**Tool:** `get_macro_indicators`
-**Sources:** US Treasury XML (yield curve), DuckDuckGo web search for CPI/Fed context
+**`news_catalyst`** — Overnight/pre-market catalyst only (earnings, contract, regulatory, product). Pre-market window is the signal; intraday news is too late.
 
-Data returned:
-- Treasury yields (3mo, 1yr, 2yr, 5yr, 10yr, 30yr) — from `home.treasury.gov` XML (free, live)
-- Macro web search results: Fed funds rate, CPI, FOMC calendar, PCE
+**`notable_mention`** — Executive order, CEO shoutout, Congressional disclosure, major investor move. Checked via DuckDuckGo (5 queries per ticker).
 
-**Interpretation:**
-- Fed cutting rates: bullish growth/tech, bullish REIT
-- Fed hiking: bearish growth, bullish banks
-- CPI falling: growth/tech benefits (lower discount rate)
-- Inverted yield curve: recession risk
-- Steepening yield curve: risk-on, financials benefit
+**`insider_buying`** — Recent Form 4 C-suite buy from SEC EDGAR direct API (`data.sec.gov`). Supportive context only — filing lag means this is not a same-day signal.
 
-**Score +1 if:** macro is a tailwind for this stock's sector
+**`contrarian_social`** — Overnight Reddit/StockTwits post count >15 with bearish sentiment on fundamentally strong setup. Reddit searched with `t=day` filter to capture overnight chatter.
 
-### Signal 4 — Fear & Greed Index + VIX + Market Indices
-**Tool:** `get_fear_greed_vix`
-**Sources:** CNN Fear & Greed API (free), FMP stable/quote for VIX, Yahoo Finance for SPY/QQQ/IWM
+**`analyst_conviction`** — 2+ recent analyst upgrades or significant price target raise in the last 30 days.
 
-- CNN Fear & Greed score (0-100) and trend (1-week, 1-month)
-- VIX level and 1D change (from FMP — works as index symbol)
-- SPY, QQQ, IWM price and 1D change (from Yahoo Finance chart API)
-
-**Interpretation:**
-- F&G < 25: Extreme fear = capitulation, buying opportunity
-- F&G > 75: Extreme greed = crowded long, take profits
-- VIX > 30: Peak fear, often a buy signal
-- VIX < 15: Complacency
-
-### Signal 5 — Sector Rotation
-**Tool:** `get_sector_rotation`
-**Source:** Yahoo Finance chart API (ETF quotes — FMP free tier doesn't support ETFs)
-
-All 11 S&P 500 sectors via ETFs (XLK, XLF, XLE, XLV, XLI, XLC, XLRE, XLU, XLP, XLY, XLB). Fetched sequentially with 80ms delay to respect Yahoo rate limits. Sorted by 1D performance.
-
-**Score +1 if:** stock's sector leading today with multi-day momentum
-
-### Signal 6 — Recent News & Catalysts
-**Tool:** `get_news`
-**Source:** DuckDuckGo web search (FMP news requires paid tier; DuckDuckGo is free)
-
-Runs 2 searches per ticker: general news + earnings/analyst catalyst search. Returns up to 10 results.
-
-**Score +1 if:** clear positive catalyst in last 48-72 hours (product launch, contract, regulatory, partnership)
-
-### Signal 7 — Notable Mentions (HIGH SIGNAL when triggered)
-**Tool:** `get_notable_mentions`
-**Source:** DuckDuckGo HTML search — 5 parallel queries per ticker
-
-Queries:
-1. `{TICKER} Trump tariff trade deal executive order 2025 2026`
-2. `{TICKER} Jensen Huang Elon Musk CEO mention 2025 2026`
-3. `{TICKER} Nancy Pelosi Congress trade disclosure 2025`
-4. `{TICKER} Warren Buffett Berkshire Ackman Cathie Wood position`
-5. `{TICKER} analyst upgrade downgrade price target {year}`
-
-**Why each source matters:**
-- **Trump/White House**: Executive orders and tariff decisions move stocks 10%+ overnight. NVDA benefited from AI chip carveouts.
-- **Jensen Huang (NVIDIA CEO)**: Most influential tech CEO for AI-adjacent stocks. A shoutout = stock moves.
-- **Elon Musk**: SpaceX/Tesla ecosystem. DOGE = government contractor risk signal.
-- **Congressional trades**: STOCK Act requires 45-day disclosure. Pelosi's track record is famous.
-- **Buffett/Ackman/Cathie Wood**: Berkshire 13F = deep fundamental conviction. ARK = high-beta disruptive.
-
-**Score +1 if:** concrete, recent mention that directly impacts the stock
-
-### Signal 8 — Insider & Institutional Activity
-**Tool:** `get_insider_activity`
-**Source:** DuckDuckGo web search for SEC Form 4 filings (FMP insider data requires paid tier)
-
-Returns web search results for recent Form 4 filings and institutional moves. Agent interprets context from results.
-
-**Interpretation:**
-- C-suite or board buying their OWN stock = very bullish (they know the trajectory)
-- Multiple insiders buying same quarter = extremely high conviction
-- Options exercise ≠ insider buying (compensation, not conviction)
-- Vanguard/BlackRock growing = passive index addition
-- Citadel/Point72/Bridgewater growing = active high-conviction bet
-
-**Score +1 for insider buying, +1 for institutional accumulation (separately)**
-
-### Signal 9 — Earnings History & Calendar
-**Tools:** `get_earnings_info` + `get_earnings_calendar`
-**Source:** DuckDuckGo web search (FMP earnings data requires paid tier)
-
-Returns web search results for recent earnings reports, EPS surprises, and upcoming earnings calendar.
-
-**Rules:**
-- Earnings in < 5 days: **-2 score penalty** — binary event, avoid new positions
-- 3+ consecutive beats: +1 score (management consistently outperforms)
-- Post-earnings selloff on strong beat: potential accumulation opportunity
-
-### Signal 10 — Reddit & StockTwits Sentiment
-**Tool:** `get_reddit_sentiment`
-**Sources:** Reddit JSON API (r/wallstreetbets, r/stocks, r/investing), StockTwits public API
-
-**This is a CONTRARIAN signal:**
-- Extreme Reddit bullishness = crowded trade, retail FOMO = often near local top
-- Extreme Reddit bearishness on fundamentally sound stock = contrarian buy
-- StockTwits > 80% bullish = sentiment overbought
-- StockTwits < 20% bullish at peak fear = contrarian accumulation zone
-
-**Score +1 if:** bears dominating on a fundamentally strong stock
-
-### Signal 11 — Web Search
-**Tool:** `web_search`
-**Source:** DuckDuckGo HTML scraper
-
-Used for ad-hoc research not captured by other tools: breaking macro, sector-specific news, geopolitical events, company-specific catalysts.
+### Sam Weiss (validation lens, not a signal)
+`search_sam_weiss_briefings(ticker)` and `get_sam_market_outlook` are available after independent research. Sam's stance does NOT change P(win) — it informs position context.
 
 ---
 
-## 8. Scoring System
+## 8. Scoring System — Logistic Regression
 
-Each stock scored 1-10 on 10 independent signals. Sam Weiss is NOT scored — he adjusts position size only.
+### Model
+P(win) = sigmoid(Σ coef_i × signal_i + intercept)
 
-### Points
+Trained daily at EOD using L2-regularized logistic regression in pure JavaScript (gradient descent, 500 epochs, lr=0.05, λ=0.01). No external ML libraries.
 
-| Signal | +1 if… |
+**Thresholds:**
+| P(win) | Action |
 |--------|--------|
-| Technical (rsi_oversold) | RSI < 50 turning up, or RSI < 30 |
-| Macro (macro_tailwind) | Rate/inflation environment tailwind for sector |
-| Sector rotation (sector_leading) | Sector leading today with multi-day momentum |
-| News/catalyst (news_catalyst) | Clear positive catalyst in last 48-72 hours |
-| Notable mention (notable_mention) | Trump order, CEO shoutout, congressional buy, major investor |
-| Insider buying (insider_buying) | C-suite buying own stock |
-| Institutional (institutional_growing) | Active funds growing position |
-| Earnings quality (earnings_beater) | Beat EPS 3+ of last 4 quarters |
-| Contrarian social (contrarian_social) | Bears dominating a fundamentally strong stock |
+| > 0.70 | Full position (high confidence) |
+| > 0.55 | Standard position |
+| 0.45–0.55 | Watch only — log for training data |
+| < 0.45 | Avoid |
+
+**Hard excludes (regardless of score):**
+- Earnings today before close
+- Past 10am PT entry window
+- Already at 2 concurrent positions
+
+**Fallback (< 60 trades):** Equal-weight — P(win) = active signal count / 10
+
+### Walk-Forward Validation
+At EOD, coefficients from this week are compared against last week on held-out trades. Accuracy reported in EOD email. New coefficients are 80/20 blended with prior day's to prevent overfitting.
+
+**Model storage:** `output/signal-weights.json`
+```json
+{
+  "weights": [0.82, 0.61, 0.44, ...],
+  "bias": -0.18,
+  "trainedOn": 87,
+  "lastUpdated": "2026-06-14",
+  "validation": {
+    "thisWeekAccuracy": 0.64,
+    "lastWeekAccuracy": 0.61
+  }
+}
+```
 | Analyst conviction (analyst_conviction) | 2+ upgrades or significant price target raise |
 
 ### Deductions
@@ -531,74 +464,95 @@ This creates a permanent, auditable record of every trading decision — enablin
 
 ## 10. Circuit Breakers & Risk Management
 
-Enforced in `agent.js` via the `CIRCUIT` state object. Cannot be overridden by Claude.
+All limits pull live account balance dynamically at the start of each run. Cannot be overridden by Claude.
 
-### Position Size Limit (5% per trade)
+### Position Size (17.5% of balance)
 ```
-checkPositionSize(tradeAmount, portfolioValue):
-  if (tradeAmount / portfolioValue > 5%):
-    auto-reduce quantity to maximum allowed
-    if 1 share > 5% of portfolio: reject trade entirely
+computePositionDollars(balance) = balance × 0.175
+```
+Dollar-denominated → fractional quantity = dollarAmount / price. Robinhood supports fractional NMS-listed stocks.
+
+### Max Concurrent Positions (2)
+`checkMaxConcurrent(openPositions)` — blocks new entries if 2 positions already open in `trades-open.json`.
+
+### Daily Loss Limit (5% of balance)
+```
+dailyLoss% = sum(open position P&L) / currentBalance
+if dailyLoss% < -5%: CIRCUIT.tripped = true — no new trades
 ```
 
-### Daily Loss Limit (5% of portfolio)
+### Weekly Drawdown Breaker (15%)
 ```
-checkCircuitBreaker(portfolioValue):
-  dailyLoss% = (dailyPnL / portfolioValueAtOpen) × 100
-  if dailyLoss% < -5%:
-    CIRCUIT.tripped = true
-    ALL subsequent place_trade calls return blocked=true
+weeklyLoss% = (currentBalance - weekStartBalance) / weekStartBalance
+if weeklyLoss% < -15%: CIRCUIT.tripped = true — MANUAL REVIEW REQUIRED
 ```
+
+### Stop Loss: ATR-14 Based
+```
+stopDistancePct = clamp((ATR14 / price) × 0.75, 1.0%, 4.0%)
+targetDistancePct = stopDistancePct × 1.5  (1.5:1 reward:risk)
+```
+Stop enforced by exit manager polling, NOT by broker-side stop orders (Robinhood only supports market orders for fractional shares). Effective stop = ±1 check interval (max 90 min gap).
+
+### Hard Force-Close (12:45pm PT)
+Pure code, no Claude, no exceptions. Market sell on every open position 15 minutes before 1pm PT close. Skipped on early-close days.
 
 ### Robinhood Account
 - Account number: 674082664
 - Type: Agentic trading sub-account (`agentic_allowed: true`)
 - All orders: market orders (GFD — good for day)
-- Assets: stocks only (no ETFs, no options, no crypto)
+- Fractional shares: supported (dollar-denominated)
+- No limit/stop orders available for fractional positions
 
 ---
 
-## 11. Self-Learning System
+## 11. Self-Learning System — Logistic Regression
 
-The agent tracks its own accuracy and injects learnings into the next morning's prompt.
+Every closed trade becomes a training sample. The model is retrained daily at EOD.
 
-### How It Works
-
-**At trade execution (`place_trade`):**
+### Training Data (`trades-log.json`)
+Each closed trade has:
 ```json
 {
-  "id": "NVDA-buy-2026-06-12T09:45:32Z",
-  "signals": { "rsi_oversold": false, "macro_tailwind": true, ... },
-  "entryPrice": 205.19,
-  "outcome": null  ← filled at EOD +5
+  "ticker": "NVDA", "date": "2026-06-14",
+  "entryPrice": 205.19, "exitPrice": 208.40,
+  "pnl": 15.60, "pnlPct": 1.56,
+  "exitReason": "target hit",
+  "signals": { "premarket_gap_up": true, "rvol_spike": true, ... },
+  "pWin": 0.68
 }
 ```
 
-**At EOD (`agent.js eod`):**
-1. `updateTradeOutcomes()` — fetches current prices for all open trades, computes unrealized P&L
-2. For trades > 5 trading days old: marks outcome as win (return > 0) or loss (return < 0)
-3. `computeSignalAccuracy(log)` — for each signal key, counts fires/wins/losses, computes win rate
+### Model Training (EOD)
+```
+Features: 10 signal binaries
+Label: 1 if pnl > 0, else 0
+Method: L2-regularized logistic regression, pure JS gradient descent
+  - 500 epochs, lr=0.05, λ=0.01
+  - Blend: 80% yesterday's weights + 20% today's new fit
+  - Minimum 60 trades required (equal-weight fallback below)
+```
 
-**Signal accuracy file (`output/signal-accuracy.json`):**
+### Model Output (`signal-weights.json`)
 ```json
 {
-  "signals": {
-    "rsi_oversold": { "fires": 14, "wins": 10, "losses": 4, "winRate": 0.714, "avgReturn": 0.034 },
-    "macro_tailwind": { "fires": 22, "wins": 16, "losses": 6, "winRate": 0.727, "avgReturn": 0.041 },
-    "notable_mention": { "fires": 5, "wins": 3, "losses": 2, "winRate": 0.600, "avgReturn": 0.022 }
-  }
+  "weights": [0.82, 0.61, 0.44, 0.38, 0.31, 0.29, 0.19, 0.12, 0.08, 0.04],
+  "bias": -0.18,
+  "trainedOn": 87,
+  "lastUpdated": "2026-06-14",
+  "validation": { "thisWeekAccuracy": 0.64, "lastWeekAccuracy": 0.61 }
 }
 ```
 
-**Next morning's prompt begins with:**
+### Morning Prompt Context
 ```
-📊 LEARNING MEMORY — Signal Accuracy (past 90 days)
-rsi_oversold:   71.4% win rate (14 fires, avg +3.4%)  ← USE THIS SIGNAL
-macro_tailwind: 72.7% win rate (22 fires, avg +4.1%)  ← USE THIS SIGNAL
-notable_mention: 60.0% win rate (5 fires, avg +2.2%)
+SIGNAL MODEL (trained on 87 trades, updated 2026-06-14)
+  premarket_gap_up          coef: +0.820
+  rvol_spike                coef: +0.610
+  gap_fill_low_prob         coef: +0.440
+  ...
+  Walk-forward: this week 64% | last week 61%
 ```
-
-The agent naturally up-weights high-accuracy signals and down-weights low-accuracy ones.
 
 ### Tomorrow's Watchlist
 At EOD, the agent saves `output/watchlist-tomorrow.json` with specific entry triggers, targets, and stop levels. Next morning, these load into the prompt so the agent picks up exactly where it left off.
@@ -726,27 +680,39 @@ Uses `nodemailer` with Gmail SMTP (`smtp.gmail.com:587`). App password generated
 
 ## 17. Daily Automation (macOS launchd)
 
-All 4 jobs are loaded and running:
+All 8 jobs are loaded and running:
 
 ```bash
 launchctl list | grep investing-tool
 # com.investing-tool.scrape      → 5:30 AM daily
-# com.investing-tool.analyze     → 6:00 AM daily  
+# com.investing-tool.analyze     → 6:00 AM daily (scan mode)
+# com.investing-tool.check-8am   → 8:00 AM daily (exit manager)
+# com.investing-tool.check-930am → 9:30 AM daily (exit manager)
+# com.investing-tool.check-11am  → 11:00 AM daily (exit manager)
+# com.investing-tool.force-close → 12:45 PM daily (hard close all)
 # com.investing-tool.eod         → 1:30 PM daily
 # com.investing-tool.kb-weekly   → 5:00 AM every Sunday
 ```
 
+All jobs exit immediately on weekends and US market holidays (hardcoded 2026 calendar).
+
 ### Plist Files
 Located at `~/Library/LaunchAgents/`:
 - `com.investing-tool.scrape.plist`
-- `com.investing-tool.analyze.plist`
+- `com.investing-tool.analyze.plist` (runs `agent.js scan`)
+- `com.investing-tool.check-8am.plist`
+- `com.investing-tool.check-930am.plist`
+- `com.investing-tool.check-11am.plist`
+- `com.investing-tool.force-close.plist` (runs `agent.js force-close`)
 - `com.investing-tool.eod.plist`
 - `com.investing-tool.kb-weekly.plist`
 
 ### Log Files
 `output/logs/`:
 - `scrape.log` — 5:30am scraper output
-- `analyze.log` — 6:00am agent output
+- `analyze.log` — 6:00am scan output
+- `check.log` — 8am/9:30am/11am exit manager output (shared)
+- `force-close.log` — 12:45pm force-close output
 - `eod.log` — 1:30pm EOD report output
 - `kb-weekly.log` — Sunday KB update output
 
@@ -754,6 +720,8 @@ Located at `~/Library/LaunchAgents/`:
 ```bash
 launchctl start com.investing-tool.scrape
 launchctl start com.investing-tool.analyze
+launchctl start com.investing-tool.check-8am
+launchctl start com.investing-tool.force-close
 launchctl start com.investing-tool.eod
 launchctl start com.investing-tool.kb-weekly
 ```
@@ -786,17 +754,21 @@ investing-tool/
 │   ├── sam-weiss-YYYY-MM-DD.json    # Daily scrape (6am)
 │   ├── recommendations-YYYY-MM-DD.md # Agent's analysis + trade decisions
 │   ├── eod-report-YYYY-MM-DD.md     # EOD P&L + learnings
-│   ├── trades-log.json              # Machine-readable trade history (learning system)
-│   ├── signal-accuracy.json         # Signal win rates (self-learning)
-│   ├── watchlist-tomorrow.json      # Tomorrow's watchlist from EOD
+│   ├── trades-log.json              # All closed trades (used for model training)
+│   ├── trades-open.json             # Today's open positions (reset daily)
+│   ├── signal-weights.json          # Logistic regression model coefficients
+│   ├── watchlist-tomorrow.json      # Tomorrow's pre-market gap candidates
 │   │
 │   ├── trades/                      # Per-trade rationale files
-│   │   ├── 2026-06-12-NVDA-buy.md  # Full thesis, signals, context, 5-day outcomes
+│   │   ├── 2026-06-14-NVDA-buy.md  # Entry data, signals, P(win), exit outcome
+│   │   ├── 2026-06-14-NVDA-buy-DRY.json  # Dry-run order log (when DRY_RUN=true)
 │   │   └── ...
 │   │
 │   ├── logs/
 │   │   ├── scrape.log               # 5:30am scraper output
-│   │   ├── analyze.log              # 6:00am agent output
+│   │   ├── analyze.log              # 6:00am scan output
+│   │   ├── check.log                # 8am/9:30am/11am exit manager output
+│   │   ├── force-close.log          # 12:45pm force-close output
 │   │   ├── eod.log                  # 1:30pm EOD output
 │   │   └── kb-weekly.log            # Sunday KB update
 │   │
@@ -860,6 +832,9 @@ GMAIL_APP_PASSWORD=[app password]
 ROBINHOOD_CLIENT_ID=[client id]
 ROBINHOOD_ACCESS_TOKEN=[JWT, valid ~259h, auto-refreshes]
 ROBINHOOD_REFRESH_TOKEN=[refresh token]
+
+# Safety: DRY_RUN=true logs orders without submitting. Set false to go live.
+DRY_RUN=true
 ```
 
 ---
@@ -876,9 +851,11 @@ npx playwright install chromium
 ### Daily Usage (these run automatically via cron — manual override below)
 ```bash
 npm run scrape        # 5:30am — scrape today's sam-weiss.com data
-npm run analyze       # 6:00am — analyze + execute trades
-node agent.js eod     # 1:30pm — EOD report + email
-npm run run           # scrape + analyze back-to-back
+npm run scan          # 6:00am — day trade scan + execute (alias: npm run analyze)
+npm run check         # 8am/9:30am/11am — exit manager
+npm run force-close   # 12:45pm — hard close all positions
+npm run eod           # 1:30pm — EOD report + email + model retrain
+npm run run           # scrape + scan back-to-back
 ```
 
 ### Knowledge Base
