@@ -25,9 +25,10 @@
 15. [Robinhood MCP — Trade Execution](#15-robinhood-mcp--trade-execution)
 16. [EOD Report & Gmail Delivery](#16-eod-report--gmail-delivery)
 17. [Daily Automation (macOS launchd)](#17-daily-automation-macos-launchd)
-18. [File Structure](#18-file-structure)
-19. [Environment Variables](#19-environment-variables)
-20. [How to Run](#20-how-to-run)
+18. [Health Monitor](#18-health-monitor)
+19. [File Structure](#19-file-structure)
+20. [Environment Variables](#20-environment-variables)
+21. [How to Run](#21-how-to-run)
 21. [Technology Stack](#21-technology-stack)
 22. [APIs & Services Used](#22-apis--services-used)
 23. [Why Credits Deplete Fast](#23-why-credits-deplete-fast)
@@ -647,7 +648,7 @@ Uses `nodemailer` with Gmail SMTP (`smtp.gmail.com:587`). App password generated
 
 ## 17. Daily Automation (macOS launchd)
 
-All 8 jobs are loaded and running:
+All 9 jobs are loaded and running:
 
 ```bash
 launchctl list | grep investing-tool
@@ -658,6 +659,7 @@ launchctl list | grep investing-tool
 # com.investing-tool.check-11am  → 11:00 AM daily (exit manager)
 # com.investing-tool.force-close → 12:45 PM daily (hard close all)
 # com.investing-tool.eod         → 1:30 PM daily
+# com.investing-tool.monitor     → 2:15 PM daily (health check)
 # com.investing-tool.kb-weekly   → 5:00 AM every Sunday
 ```
 
@@ -672,6 +674,7 @@ Located at `~/Library/LaunchAgents/`:
 - `com.investing-tool.check-11am.plist`
 - `com.investing-tool.force-close.plist` (runs `agent.js force-close`)
 - `com.investing-tool.eod.plist`
+- `com.investing-tool.monitor.plist`
 - `com.investing-tool.kb-weekly.plist`
 
 ### Log Files
@@ -681,6 +684,7 @@ Located at `~/Library/LaunchAgents/`:
 - `check.log` — 8am/9:30am/11am exit manager output (shared)
 - `force-close.log` — 12:45pm force-close output
 - `eod.log` — 1:30pm EOD report output
+- `monitor.log` — 2:15pm health check output
 - `kb-weekly.log` — Sunday KB update output
 
 ### To manually trigger any job
@@ -690,6 +694,7 @@ launchctl start com.investing-tool.analyze
 launchctl start com.investing-tool.check-8am
 launchctl start com.investing-tool.force-close
 launchctl start com.investing-tool.eod
+launchctl start com.investing-tool.monitor
 launchctl start com.investing-tool.kb-weekly
 ```
 
@@ -701,11 +706,40 @@ The nvm-managed Node is hardcoded in all plists:
 
 ---
 
-## 18. File Structure
+## 18. Health Monitor
+
+**Script:** `monitor.js`
+**Schedule:** 2:15pm PT daily (after EOD completes)
+**Cost:** $0 — pure code, no Claude API calls
+
+Runs 5 checks every trading day and sends a failure email if anything is wrong:
+
+| Check | Pass condition | Failure means |
+|-------|---------------|---------------|
+| Scrape | `sam-weiss-{today}.json` exists | scraper crashed or never ran |
+| Scan | `recommendations-{today}.md` exists | scan agent crashed |
+| EOD | `eod-report-{today}.md` exists | EOD agent crashed |
+| Positions cleared | `trades-open.json` has 0 entries | force-close failed to close something — **check Robinhood immediately** |
+| Force-close log | `force-close.log` touched after 12:45pm | launchd job never fired |
+
+On failure: email subject is `🚨 Investing Agent — N failure(s) on YYYY-MM-DD` with details on which checks failed and what to look at.
+
+On success: no email sent (silence = green).
+
+```bash
+# Manually trigger
+node monitor.js
+launchctl start com.investing-tool.monitor
+```
+
+---
+
+## 19. File Structure
 
 ```
 investing-tool/
 ├── agent.js                          # Main investing agent (~1200 lines)
+├── monitor.js                        # Daily health checker (pure code, no Claude)
 ├── scraper.js                        # Daily morning scraper (194 lines)
 ├── scraper-knowledge-base.js         # Full KB + weekly updater (~800 lines)
 ├── robinhood-auth.js                 # One-time OAuth PKCE flow
@@ -737,6 +771,7 @@ investing-tool/
 │   │   ├── check.log                # 8am/9:30am/11am exit manager output
 │   │   ├── force-close.log          # 12:45pm force-close output
 │   │   ├── eod.log                  # 1:30pm EOD output
+│   │   ├── monitor.log              # 2:15pm health check output
 │   │   └── kb-weekly.log            # Sunday KB update
 │   │
 │   └── knowledge-base/
@@ -776,7 +811,7 @@ investing-tool/
 
 ---
 
-## 19. Environment Variables
+## 20. Environment Variables
 
 **File:** `.env` (gitignored — NEVER commit this file)
 
@@ -806,7 +841,7 @@ DRY_RUN=true
 
 ---
 
-## 20. How to Run
+## 21. How to Run
 
 ### Prerequisites
 ```bash
@@ -838,7 +873,7 @@ node robinhood-auth.js   # Authenticate Robinhood MCP
 
 ---
 
-## 21. Technology Stack
+## 22. Technology Stack
 
 | Component | Technology |
 |-----------|-----------|
