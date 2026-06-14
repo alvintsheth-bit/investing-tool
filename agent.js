@@ -16,6 +16,13 @@ mkdirSync(OUTPUT_DIR, { recursive: true });
 
 const MODE = process.argv[2] || 'analyze'; // analyze | eod
 
+// Exit on weekends — no market, no point running
+const dayOfWeek = new Date().getDay();
+if (dayOfWeek === 0 || dayOfWeek === 6) {
+  console.log(`[${MODE}] Weekend — skipping. Markets closed.`);
+  process.exit(0);
+}
+
 // ─── Knowledge Base Loader ────────────────────────────────────────────────────
 function loadKBFile(filename, maxChars = 20000) {
   const path = join(KB_DIR, filename);
@@ -1355,6 +1362,8 @@ Rate today 1-10: alignment with Sam's 4-part framework.
   const messages = [{ role: 'user', content: prompt }];
   let response;
   let iterations = 0;
+  let totalInputTokens = 0;
+  let totalOutputTokens = 0;
 
   while (iterations < 12) {
     iterations++;
@@ -1364,6 +1373,9 @@ Rate today 1-10: alignment with Sam's 4-part framework.
       tools: eodTools,
       messages,
     });
+
+    totalInputTokens += response.usage?.input_tokens || 0;
+    totalOutputTokens += response.usage?.output_tokens || 0;
 
     messages.push({ role: 'assistant', content: response.content });
     if (response.stop_reason === 'end_turn') break;
@@ -1378,6 +1390,9 @@ Rate today 1-10: alignment with Sam's 4-part framework.
       messages.push({ role: 'user', content: toolResults });
     }
   }
+
+  const eodCostUsd = (totalInputTokens * 0.80 + totalOutputTokens * 4.0) / 1_000_000;
+  console.log(`\n[EOD] Tokens — input: ${totalInputTokens.toLocaleString()} | output: ${totalOutputTokens.toLocaleString()} | est. cost: $${eodCostUsd.toFixed(4)}`);
 
   const reportText = response.content.filter(b => b.type === 'text').map(b => b.text).join('\n');
   const reportPath = join(OUTPUT_DIR, `eod-report-${today}.md`);
@@ -1401,6 +1416,8 @@ async function run() {
   const messages = [{ role: 'user', content: buildPrompt() }];
   let response;
   let iterations = 0;
+  let totalInputTokens = 0;
+  let totalOutputTokens = 0;
 
   while (iterations < 20) {
     iterations++;
@@ -1410,6 +1427,9 @@ async function run() {
       tools,
       messages,
     });
+
+    totalInputTokens += response.usage?.input_tokens || 0;
+    totalOutputTokens += response.usage?.output_tokens || 0;
 
     console.log(`[Iter ${iterations}] stop: ${response.stop_reason}, blocks: ${response.content.length}`);
     messages.push({ role: 'assistant', content: response.content });
@@ -1426,6 +1446,9 @@ async function run() {
       messages.push({ role: 'user', content: toolResults });
     }
   }
+
+  const analyzeCostUsd = (totalInputTokens * 3.0 + totalOutputTokens * 15.0) / 1_000_000;
+  console.log(`\n[Analyze] Tokens — input: ${totalInputTokens.toLocaleString()} | output: ${totalOutputTokens.toLocaleString()} | est. cost: $${analyzeCostUsd.toFixed(4)}`);
 
   const finalText = response.content.filter(b => b.type === 'text').map(b => b.text).join('\n');
   const today = getDateStr(0);
