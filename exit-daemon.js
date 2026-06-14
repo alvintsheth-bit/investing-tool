@@ -47,11 +47,25 @@ function ptMinutes() {
 
 const PT = {
   MARKET_OPEN:        6 * 60 + 30,  // 6:30am
+  OR_CHECK:           6 * 60 + 45,  // 6:45am — all 3 first 5-min bars complete at 6:45am
   ENTRY_CUTOFF:      10 * 60,        // 10:00am
   EARLY_FORCE_CLOSE:  9 * 60 + 45,  // 9:45am (early-close days)
   FORCE_CLOSE:       12 * 60 + 45,  // 12:45pm
   MARKET_CLOSE:      13 * 60,        // 1:00pm
 };
+
+// ─── Trade State Machine (mirrors agent.js — no shared lib to keep daemon standalone) ──
+const TRADE_STATES = {
+  PROTECTED:    'PROTECTED',
+  EXIT_PENDING: 'EXIT_PENDING',
+  CLOSED:       'CLOSED',
+};
+
+function addStateHistory(pos, newState, meta = {}) {
+  pos.state = newState;
+  if (!pos.stateHistory) pos.stateHistory = [];
+  pos.stateHistory.push({ state: newState, at: new Date().toISOString(), ...meta });
+}
 
 const forceCloseTime = EARLY_CLOSE_DATES.has(today) ? PT.EARLY_FORCE_CLOSE : PT.FORCE_CLOSE;
 const marketCloseTime = EARLY_CLOSE_DATES.has(today) ? 10 * 60 : PT.MARKET_CLOSE;
@@ -255,11 +269,20 @@ async function closePosition(pos, currentPrice, exitReason) {
   const pnl    = (currentPrice - pos.entryPrice) * pos.fractionalQty;
   const pnlPct = ((currentPrice - pos.entryPrice) / pos.entryPrice) * 100;
 
+  // Item 35: transition to EXIT_PENDING and persist before executing sell
+  addStateHistory(pos, TRADE_STATES.EXIT_PENDING, { reason: exitReason, priceAtDecision: currentPrice });
+  const openData = loadOpenPositions();
+  const livePos  = openData.positions.find(p => p.ticker === pos.ticker);
+  if (livePos) { Object.assign(livePos, { state: pos.state, stateHistory: pos.stateHistory }); saveOpenPositions(openData.positions); }
+
   const result = await executeSell(pos.ticker, currentPrice, pos.dollarAmount, pos.fractionalQty, exitReason);
   if (result?.error) {
-    console.error(`  ❌ [${pos.ticker}] Sell failed: ${result.error}`);
+    console.error(`  ❌ [${pos.ticker}] Sell failed: ${result.error} — position remains EXIT_PENDING`);
     return false;
   }
+
+  // Item 35: CLOSED
+  addStateHistory(pos, TRADE_STATES.CLOSED, { exitPrice: currentPrice, pnl: +pnl.toFixed(2) });
 
   recordClosedTrade({
     ticker: pos.ticker, side: pos.side, dollarAmount: pos.dollarAmount,
@@ -270,19 +293,23 @@ async function closePosition(pos, currentPrice, exitReason) {
     maxAdverseExcursion:   pos.maxAdverseExcursion   ?? 0,
     exitReason, entryTime: pos.entryTime, exitTime: new Date().toISOString(), date: today,
     isLive: !DRY_RUN,
+    state: TRADE_STATES.CLOSED, stateHistory: pos.stateHistory,
   });
 
   removeOpenPosition(pos.ticker);
 
-  // Update trade rationale .md file
+  // Update trade rationale .md file with exit outcome + state transitions
   const slug   = `${today}-${pos.ticker}-${pos.side}`;
   const mdPath = join(OUTPUT_DIR, 'trades', `${slug}.md`);
   if (existsSync(mdPath)) {
+    const exitAt = new Date().toISOString();
     let md = readFileSync(mdPath, 'utf-8');
     md = md.replace('| Exit Price | — |',   `| Exit Price | $${currentPrice} |`)
-           .replace('| Exit Time | — |',    `| Exit Time | ${new Date().toISOString()} |`)
+           .replace('| Exit Time | — |',    `| Exit Time | ${exitAt} |`)
            .replace('| P&L | — |',          `| P&L | ${pnl >= 0 ? '+' : ''}$${pnl.toFixed(2)} (${pnlPct.toFixed(1)}%) |`)
-           .replace('| Exit Reason | — |',  `| Exit Reason | ${exitReason} |`);
+           .replace('| Exit Reason | — |',  `| Exit Reason | ${exitReason} |`)
+           .replace('| EXIT_PENDING | — | — |', `| EXIT_PENDING | ${exitAt} | ${exitReason} |`)
+           .replace('| CLOSED | — | — |',   `| CLOSED | ${exitAt} | exit_price=$${currentPrice}, pnl=${pnl >= 0 ? '+' : ''}$${pnl.toFixed(2)} |`);
     writeFileSync(mdPath, md);
   }
 
@@ -325,23 +352,44 @@ async function main() {
       continue;
     }
 
-    // ── Opening range update (item 18) — runs once after market open + 5 min ──
-    if (!openingRangeComputed && ptNow >= PT.MARKET_OPEN + 6) {
-      console.log('[exit-daemon] Computing opening ranges...');
-      for (const pos of openData.positions) {
+    // ── Item 37: Opening range update — runs once at 6:45am PT ──────────────
+    // All 3 first five-minute bars are complete at 6:45am (6:30, 6:35, 6:40 bars close by 6:45)
+    if (!openingRangeComputed && ptNow >= PT.OR_CHECK) {
+      console.log('[exit-daemon] 6:45am: computing opening ranges (3 completed 5-min bars)...');
+      const positionsToSave = [...openData.positions];
+      const immediateExits = [];
+
+      for (const pos of positionsToSave) {
+        // Only apply OR stop to PROTECTED positions
+        if (pos.state && pos.state !== TRADE_STATES.PROTECTED) continue;
         const or = await getOpeningRange(pos.ticker);
-        if (!or) continue;
-        // For buy: use OR low as stop if tighter (higher price) than ATR stop
+        if (!or || or.barsUsed < 1) { console.log(`  [${pos.ticker}] OR: no bars yet — skipping`); continue; }
         const orStop = or.orLow;
+        // Only tighten, never loosen: OR stop must be HIGHER than current ATR stop
         if (orStop > pos.stopPrice) {
+          const oldStop = pos.stopPrice;
           pos.stopPrice = +orStop.toFixed(2);
-          const stopDist = (pos.entryPrice - orStop) / pos.entryPrice;
+          const stopDist = Math.abs((pos.entryPrice - orStop) / pos.entryPrice);
           pos.targetPrice = +(pos.entryPrice * (1 + stopDist * 1.5)).toFixed(2);
-          console.log(`  [${pos.ticker}] OR stop updated: $${orStop.toFixed(2)} (${or.barsUsed} bars) | new target: $${pos.targetPrice}`);
+          console.log(`  [${pos.ticker}] OR stop tightened: $${oldStop} → $${pos.stopPrice} (${or.barsUsed} bars) | new target: $${pos.targetPrice}`);
+
+          // Item 37: if current price already below new OR stop, exit immediately
+          const price = await getCurrentPrice(pos.ticker);
+          if (price && price <= pos.stopPrice) {
+            console.log(`  [${pos.ticker}] Price $${price.toFixed(2)} ≤ OR stop $${pos.stopPrice} — immediate exit (don't wait for next poll)`);
+            immediateExits.push({ pos, price });
+          }
+        } else {
+          console.log(`  [${pos.ticker}] OR low $${orStop.toFixed(2)} ≤ current stop $${pos.stopPrice} — no change (would loosen)`);
         }
       }
-      saveOpenPositions(openData.positions);
+      saveOpenPositions(positionsToSave);
       openingRangeComputed = true;
+
+      // Process any immediate exits triggered by OR stop crossing
+      for (const { pos, price } of immediateExits) {
+        await closePosition(pos, price, `or-stop-immediate ($${price.toFixed(2)} ≤ OR low $${pos.stopPrice})`);
+      }
     }
 
     // ── Force-close time ──────────────────────────────────────────────────────
@@ -359,6 +407,12 @@ async function main() {
     // ── Fast loop: stop/target check ─────────────────────────────────────────
     const updatedPositions = [...openData.positions];
     for (const pos of updatedPositions) {
+      // Item 35: stop/target only valid once PROTECTED. If no state field (legacy records), treat as PROTECTED.
+      if (pos.state && pos.state !== TRADE_STATES.PROTECTED) {
+        console.log(`  [${pos.ticker}] Waiting for PROTECTED state (current: ${pos.state}) — skipping stop/target`);
+        continue;
+      }
+
       const price = await getCurrentPrice(pos.ticker);
 
       if (price == null) {

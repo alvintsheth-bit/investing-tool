@@ -65,6 +65,27 @@ const OPEN_POSITIONS_FILE  = join(OUTPUT_DIR, 'trades-open.json');
 const TRADES_LOG_FILE      = join(OUTPUT_DIR, 'trades-log.json');
 const SIGNAL_WEIGHTS_FILE  = join(OUTPUT_DIR, 'signal-weights.json');
 const WATCHLIST_FILE       = join(OUTPUT_DIR, 'watchlist-tomorrow.json');
+const CIRCUIT_BREAKER_FILE = join(OUTPUT_DIR, 'circuit-breaker.json');
+
+// ─── Trade State Machine (item 35) ───────────────────────────────────────────
+const TRADE_STATES = {
+  CANDIDATE:       'CANDIDATE',       // score passed, pre-checks not yet run
+  ORDER_SUBMITTED: 'ORDER_SUBMITTED', // order sent to broker
+  ORDER_PENDING:   'ORDER_PENDING',   // waiting for fill confirmation
+  PARTIALLY_FILLED:'PARTIALLY_FILLED',// partial fill observed
+  FILLED:          'FILLED',          // confirmed average fill price known
+  PROTECTED:       'PROTECTED',       // stop/target set from fill price, daemon monitoring
+  EXIT_PENDING:    'EXIT_PENDING',    // sell order submitted
+  CLOSED:          'CLOSED',          // position fully exited
+};
+
+function transitionState(posRecord, newState, meta = {}) {
+  posRecord.state = newState;
+  if (!posRecord.stateHistory) posRecord.stateHistory = [];
+  posRecord.stateHistory.push({ state: newState, at: new Date().toISOString(), ...meta });
+  const note = meta.fillPrice ? ` @ $${meta.fillPrice}` : meta.stopPrice ? ` stop=$${meta.stopPrice}` : '';
+  console.log(`  [${posRecord.ticker || '?'}] ▶ ${newState}${note}`);
+}
 
 // ─── Atomic File Write ────────────────────────────────────────────────────────
 // Uses rename which is atomic on POSIX — prevents corruption from concurrent runs
@@ -241,7 +262,7 @@ LEARNING MEMORY
       ctx += `  Walk-forward: this week ${(weights.validation.thisWeekAccuracy * 100).toFixed(0)}% | last week ${(weights.validation.lastWeekAccuracy * 100).toFixed(0)}%\n`;
     }
   } else {
-    ctx += `\n### SIGNAL MODEL\nNot yet trained (need 60+ completed trades). Using equal-weight P(win) scoring.\n`;
+    ctx += `\n### SIGNAL MODEL\nNot yet trained (need 60+ completed trades). Using equal-weight setup_score scoring.\n`;
   }
 
   if (recentTrades.length) {
@@ -276,6 +297,14 @@ function loadSODBalance() {
 function saveSODBalance(balance) {
   atomicWrite(SOD_BALANCE_FILE, { date: today, balance });
 }
+
+// ─── Persistent Circuit Breaker State (item 38) ───────────────────────────────
+// Does NOT auto-clear — requires: node agent.js reset-circuit
+function loadCircuitBreakerState() {
+  if (!existsSync(CIRCUIT_BREAKER_FILE)) return { tripped: false };
+  try { return JSON.parse(readFileSync(CIRCUIT_BREAKER_FILE, 'utf-8')); } catch { return { tripped: false }; }
+}
+function saveCircuitBreakerState(state) { atomicWrite(CIRCUIT_BREAKER_FILE, state); }
 
 // Realized P&L from trades closed today + unrealized from open positions
 function computeDailyPnl(openPositions) {
@@ -978,7 +1007,7 @@ const tools = [
         marketContext: { type: 'string', description: 'VIX, Fear & Greed, sector context at entry' },
         samAlignment:  { type: 'string', description: 'Sam\'s stance on this ticker (if checked)' },
       },
-      required: ['ticker', 'side', 'pWin', 'rationale', 'signals'],
+      required: ['ticker', 'side', 'setupScore', 'rationale', 'signals'],
     },
   },
   {
@@ -1067,23 +1096,24 @@ async function executeTool(name, input) {
       };
     }
     case 'place_trade': {
-      if (CIRCUIT.tripped) return { blocked: true, reason: 'Circuit breaker tripped.' };
+      // ── Item 38: persistent circuit breaker check (does not auto-clear) ──────
+      const cbPersist = loadCircuitBreakerState();
+      if (cbPersist.tripped) return { blocked: true, reason: `Circuit breaker: ${cbPersist.reason} — reset with: node agent.js reset-circuit` };
+      if (CIRCUIT.tripped) return { blocked: true, reason: 'Circuit breaker tripped this session.' };
 
       const { ticker, side, setupScore, rationale, signals, targetPrice: rawTarget, stopPrice: rawStop, atr14, marketContext, samAlignment } = input;
-      let stopPrice  = rawStop;
-      let targetPrice = rawTarget;
 
-      // Hard exclude: setup_score too low
+      // ── Item 35: initialize position record with state machine ────────────────
+      const posRecord = { ticker, side, state: TRADE_STATES.CANDIDATE, stateHistory: [] };
+      transitionState(posRecord, TRADE_STATES.CANDIDATE, { setupScore });
+
+      // Hard excludes
       if (setupScore < 0.55) return { blocked: true, reason: `setup_score ${setupScore.toFixed(2)} < 0.55 threshold` };
-
-      // Hard exclude: no entries after 10am PT (17:00 UTC PDT)
       if (new Date().getUTCHours() >= 17) return { blocked: true, reason: 'Entry window closed — past 10am PT' };
 
-      // Item 21: 3-consecutive-loss pause
       const lossCheck = checkConsecutiveLosses();
       if (lossCheck.blocked) return lossCheck;
 
-      // Item 22: reconcile before acting
       const acct = await rhGetAccountNumber();
       const reconcile = await reconcilePositions(acct);
       if (!reconcile.ok && reconcile.mismatch) {
@@ -1091,38 +1121,99 @@ async function executeTool(name, input) {
         return { blocked: true, reason: `Reconciliation mismatch: ${reconcile.mismatch}` };
       }
 
-      // Check concurrent position limit (uses pilot-aware MAX_POSITIONS)
       const openData = loadOpenPositions();
       const concurrentCheck = checkMaxConcurrent(openData.positions);
       if (concurrentCheck.blocked) return concurrentCheck;
 
-      // Get portfolio balance
+      // ── Get portfolio once — used for both circuit breaker and sizing ─────────
       const portResult = acct ? await rhMCP('get_portfolio', { account_number: acct }) : null;
       const port       = portResult?.data || portResult || {};
-      const balance    = parseFloat(port?.equity_value || port?.total_value || 0);
-      if (!balance) return { error: 'Could not read account balance — pre-flight failed' };
+      const equity     = parseFloat(port?.equity_value || port?.total_value || 0);
+      if (!equity) return { error: 'Could not read account balance — pre-flight failed' };
 
-      // Item 17: circuit breaker uses realized+unrealized vs SOD balance
-      const totalDailyPnl = computeDailyPnl(openData.positions);
-      const cbCheck = checkCircuitBreaker(balance, totalDailyPnl, CIRCUIT.weekStartBalance || balance);
-      if (cbCheck.blocked) return cbCheck;
+      // ── Item 34: use settled buying power for position sizing ─────────────────
+      const rawBP       = parseFloat(port?.buying_power?.buying_power || port?.buying_power || 0);
+      const availableCash = rawBP > 0 ? rawBP : equity;
+      if (rawBP > 0 && equity > 0) {
+        const unsettledPct = ((equity - rawBP) / equity) * 100;
+        if (unsettledPct > 10) {
+          console.warn(`  ⚠️  [item34] Settled cash: buying_power=$${rawBP.toFixed(2)} vs equity=$${equity.toFixed(2)} (${unsettledPct.toFixed(1)}% unsettled — good-faith-violation risk if <$2 cash buffer)`);
+        } else {
+          console.log(`  💰 buying_power=$${rawBP.toFixed(2)} | equity=$${equity.toFixed(2)}`);
+        }
+      }
 
-      // Dollar-denominated position size (10% pilot / 17.5% steady-state)
-      const dollarAmount = computePositionDollars(balance);
-      const quote        = await getQuote(ticker);
+      // ── Item 38: circuit breaker — broker equity as source of truth ───────────
+      const sodBalance    = loadSODBalance() || equity;
+      const dailyBrokerPct = ((equity - sodBalance) / sodBalance) * 100;
+      const localPnl      = computeDailyPnl(openData.positions);
+      const localDailyPct = sodBalance ? (localPnl / sodBalance) * 100 : 0;
+      if (Math.abs(dailyBrokerPct - localDailyPct) > 2) {
+        console.warn(`  ⚠️  P&L source discrepancy: broker=${dailyBrokerPct.toFixed(2)}% vs local=${localDailyPct.toFixed(2)}% — using broker equity as truth`);
+      }
+      console.log(`  📊 Daily P&L: ${dailyBrokerPct >= 0 ? '+' : ''}${dailyBrokerPct.toFixed(2)}% (broker) | SOD=$${sodBalance.toFixed(2)} | now=$${equity.toFixed(2)}`);
+
+      if (dailyBrokerPct <= -1.5) {
+        const tripReason = `Daily loss ${dailyBrokerPct.toFixed(2)}% of SOD balance ($${sodBalance.toFixed(2)})`;
+        saveCircuitBreakerState({ tripped: true, reason: tripReason, trippedAt: new Date().toISOString(), equity, sodBalance });
+        CIRCUIT.tripped = true;
+        await flattenAllPositions('circuit-breaker-daily-loss');
+        await sendAlertEmail('🔴 Circuit Breaker Tripped', `${tripReason}\n\nAll positions flattened. Cannot-autoclear — run: node agent.js reset-circuit`);
+        return { blocked: true, reason: tripReason };
+      }
+      const weeklyLossPct = CIRCUIT.weekStartBalance ? ((equity - CIRCUIT.weekStartBalance) / CIRCUIT.weekStartBalance) * 100 : 0;
+      if (weeklyLossPct <= -5) {
+        const tripReason = `Weekly drawdown ${weeklyLossPct.toFixed(2)}%`;
+        saveCircuitBreakerState({ tripped: true, reason: tripReason, trippedAt: new Date().toISOString(), equity });
+        CIRCUIT.tripped = true;
+        await flattenAllPositions('circuit-breaker-weekly-drawdown');
+        await sendAlertEmail('🔴 Weekly Drawdown Limit', `${tripReason}\n\nAll positions flattened. Run: node agent.js reset-circuit`);
+        return { blocked: true, reason: tripReason };
+      }
+
+      // ── Sizing from buying power (item 34), price from quote ─────────────────
+      const dollarAmount  = computePositionDollars(availableCash);
+      const quote         = await getQuote(ticker);
       const decisionPrice = quote?.price;
-      if (!decisionPrice) return { error: `Could not get price for ${ticker}` };
+      if (!decisionPrice) return { error: `Could not get current price for ${ticker}` };
 
       const fractionalQty = (dollarAmount / decisionPrice).toFixed(4);
-      console.log(`\n  📈 ${DRY_RUN ? '[DRY] ' : ''}${side.toUpperCase()} $${dollarAmount} (${fractionalQty} sh) ${ticker} | score=${setupScore.toFixed(2)} | stop=$${stopPrice} | target=$${targetPrice}`);
+      console.log(`\n  📈 ${DRY_RUN ? '[DRY] ' : ''}${side.toUpperCase()} $${dollarAmount} (${fractionalQty} sh) ${ticker} | score=${setupScore.toFixed(2)}`);
+
+      // Fill in full position fields (stop/target initially from ATR/agent input)
+      Object.assign(posRecord, {
+        decisionPrice,
+        dollarAmount:  parseFloat(dollarAmount),
+        fractionalQty: parseFloat(fractionalQty),
+        stopPrice:     rawStop  || parseFloat((decisionPrice * (1 - 0.025)).toFixed(2)),
+        targetPrice:   rawTarget || parseFloat((decisionPrice * (1 + 0.0375)).toFixed(2)),
+        atr14:  atr14  || null,
+        signals: signals || {},
+        setupScore, rationale, marketContext, samAlignment,
+        entryTime:  new Date().toISOString(),
+        entryPrice: decisionPrice, // updated to confirmed fill below
+        slippagePct: 0,
+        currentPnl: 0, maxFavorableExcursion: 0, maxAdverseExcursion: 0,
+        isLive: !DRY_RUN,
+      });
+
+      // ── Item 35: ORDER_SUBMITTED ──────────────────────────────────────────────
+      transitionState(posRecord, TRADE_STATES.ORDER_SUBMITTED, { decisionPrice, dollarAmount });
 
       const orderResult = await executeMarketOrder(ticker, side, dollarAmount, decisionPrice, rationale.slice(0, 80));
       if (orderResult.error) { console.log(`  ❌ Failed: ${orderResult.error}`); return orderResult; }
 
-      // Item 19: confirm actual fill price (live mode only) and recompute stop/target
-      let entryPrice = decisionPrice;
+      // ── Item 35: fill confirmation → FILLED → PROTECTED ──────────────────────
+      let entryPrice  = decisionPrice;
       let slippagePct = 0;
-      if (!DRY_RUN && acct) {
+
+      if (DRY_RUN) {
+        // Simulate immediate fill at decision price — stop/target already set
+        transitionState(posRecord, TRADE_STATES.FILLED, { fillPrice: decisionPrice, note: 'DRY_RUN — decision price used as fill' });
+        transitionState(posRecord, TRADE_STATES.PROTECTED, { stopPrice: posRecord.stopPrice, targetPrice: posRecord.targetPrice });
+      } else {
+        // Live: poll broker for confirmed average fill price (up to 3 attempts)
+        transitionState(posRecord, TRADE_STATES.ORDER_PENDING);
         for (let attempt = 0; attempt < 3; attempt++) {
           await sleep(2500);
           const positions = await rhMCP('get_equity_positions', { account_number: acct });
@@ -1130,39 +1221,38 @@ async function executeTool(name, input) {
           if (filled?.average_buy_price) {
             entryPrice  = parseFloat(filled.average_buy_price);
             slippagePct = Math.abs((entryPrice - decisionPrice) / decisionPrice * 100);
-            if (slippagePct > 2) console.warn(`  ⚠️  Slippage: ${slippagePct.toFixed(2)}% (decision $${decisionPrice} → fill $${entryPrice})`);
-            // Recompute stop/target from confirmed fill price
-            const stopDist = stopPrice ? Math.abs((stopPrice - decisionPrice) / decisionPrice) : (parseFloat(atr14 || 0) / decisionPrice) * 0.75;
-            stopPrice   = parseFloat((entryPrice * (1 - stopDist)).toFixed(2));
-            targetPrice = parseFloat((entryPrice * (1 + stopDist * 1.5)).toFixed(2));
+            transitionState(posRecord, TRADE_STATES.FILLED, { fillPrice: entryPrice, slippagePct: +slippagePct.toFixed(3) });
+            if (slippagePct > 2) console.warn(`  ⚠️  Entry slippage ${slippagePct.toFixed(2)}%: decision $${decisionPrice} → fill $${entryPrice}`);
+            // Recompute stop/target from confirmed fill price (item 19)
+            const stopDist = rawStop ? Math.abs((rawStop - decisionPrice) / decisionPrice) : (parseFloat(atr14 || 0) / decisionPrice) * 0.75;
+            posRecord.entryPrice  = entryPrice;
+            posRecord.slippagePct = +slippagePct.toFixed(3);
+            posRecord.stopPrice   = parseFloat((entryPrice * (1 - stopDist)).toFixed(2));
+            posRecord.targetPrice = parseFloat((entryPrice * (1 + stopDist * 1.5)).toFixed(2));
+            transitionState(posRecord, TRADE_STATES.PROTECTED, { stopPrice: posRecord.stopPrice, targetPrice: posRecord.targetPrice });
             break;
           }
         }
+        if (posRecord.state !== TRADE_STATES.PROTECTED) {
+          console.warn(`  ⚠️  [${ticker}] Fill not confirmed after 3 attempts — position in ORDER_PENDING; daemon will monitor once confirmed`);
+          posRecord.entryPrice = decisionPrice;
+        }
       }
 
-      // Record open position for exit daemon
-      const posRecord = {
-        ticker, side, entryPrice, decisionPrice, slippagePct: +slippagePct.toFixed(3),
-        dollarAmount: parseFloat(dollarAmount), fractionalQty: parseFloat(fractionalQty),
-        stopPrice:   stopPrice   || entryPrice * (1 - 0.025),
-        targetPrice: targetPrice || entryPrice * (1 + 0.0375),
-        atr14: atr14 || null,
-        signals: signals || {},
-        setupScore, rationale, marketContext, samAlignment,
-        entryTime: new Date().toISOString(),
-        currentPnl: 0,
-        maxFavorableExcursion: 0,  // item 31: tracked by exit-daemon
-        maxAdverseExcursion:   0,
-        isLive: !DRY_RUN,          // item 28: for model sizing threshold
-      };
+      posRecord.entryPrice  = entryPrice;
+      posRecord.slippagePct = +slippagePct.toFixed(3);
       addOpenPosition(posRecord);
 
-      // Write trade rationale file
+      // Write trade rationale file with state history
       const slug = `${today}-${ticker}-${side}`;
+      const stateTable = (posRecord.stateHistory || []).map(s =>
+        `| ${s.state} | ${s.at} | ${Object.entries(s).filter(([k]) => !['state','at'].includes(k)).map(([k,v]) => `${k}=${v}`).join(', ')} |`
+      ).join('\n');
       const md = [
         `# Trade Record — ${side.toUpperCase()} $${dollarAmount} ${ticker}`,
         `**Date/Time:** ${posRecord.entryTime}`,
-        `**Setup Score:** ${setupScore.toFixed(3)} | **Mode:** ${DRY_RUN ? 'DRY RUN' : 'LIVE'}${slippagePct > 0 ? ` | **Slippage:** ${slippagePct.toFixed(2)}%` : ''}`,
+        `**Setup Score:** ${setupScore.toFixed(3)} | **Mode:** ${DRY_RUN ? 'DRY RUN' : 'LIVE'}${slippagePct > 0 ? ` | **Entry Slippage:** ${slippagePct.toFixed(2)}%` : ''}`,
+        `**Final State:** ${posRecord.state}`,
         '',
         '## Decision Rationale', rationale,
         '',
@@ -1170,11 +1260,19 @@ async function executeTool(name, input) {
         `| | |`, `|---|---|`,
         `| Decision Price | $${decisionPrice} |`,
         `| Fill Price | $${entryPrice} |`,
+        `| Entry Slippage | ${slippagePct.toFixed(3)}% |`,
         `| Dollar Amount | $${dollarAmount} |`,
         `| Fractional Qty | ${fractionalQty} shares |`,
         `| Stop Price | $${posRecord.stopPrice} |`,
         `| Target Price | $${posRecord.targetPrice} |`,
         `| ATR-14 | $${atr14 ?? 'n/a'} |`,
+        '',
+        '## State History',
+        '| State | Time | Notes |',
+        '|-------|------|-------|',
+        stateTable,
+        '| EXIT_PENDING | — | — |',
+        '| CLOSED | — | — |',
         '',
         '## Signals',
         signals ? Object.entries(signals).map(([k, v]) => `- ${v ? '✅' : '❌'} ${k}`).join('\n') : 'Not recorded',
@@ -1195,8 +1293,8 @@ async function executeTool(name, input) {
       writeFileSync(join(OUTPUT_DIR, 'trades', `${slug}.md`), md);
 
       CIRCUIT.tradesExecuted.push({ ticker, side, dollarAmount, entryPrice, setupScore });
-      console.log(`  ✅ Recorded → output/trades/${slug}.md`);
-      return { success: true, ticker, side, dollarAmount, entryPrice, decisionPrice, fractionalQty, stopPrice: posRecord.stopPrice, targetPrice: posRecord.targetPrice, dryRun: DRY_RUN };
+      console.log(`  ✅ [${posRecord.state}] Recorded → output/trades/${slug}.md`);
+      return { success: true, ticker, side, dollarAmount, entryPrice, decisionPrice, slippagePct: +slippagePct.toFixed(3), fractionalQty, stopPrice: posRecord.stopPrice, targetPrice: posRecord.targetPrice, state: posRecord.state, dryRun: DRY_RUN };
     }
     case 'log_rejected_candidate': {
       const { ticker, setupScore, gapPct, rvol, signals, reason } = input;
@@ -1214,6 +1312,39 @@ async function executeTool(name, input) {
       return { success: true, savedCount: watchlist.length };
     }
     default: return { error: `Unknown tool: ${name}` };
+  }
+}
+
+// ─── Flatten All Positions (item 38 — circuit breaker triggered) ──────────────
+async function flattenAllPositions(reason) {
+  const openData = loadOpenPositions();
+  if (!openData.positions.length) { console.log(`  [flatten] No positions to flatten.`); return; }
+  console.log(`  [flatten] Flattening ${openData.positions.length} position(s): ${reason}`);
+  for (const pos of [...openData.positions]) {
+    const quote = await getQuote(pos.ticker);
+    const currentPrice = quote?.price || pos.entryPrice;
+    const pnl    = (currentPrice - pos.entryPrice) * pos.fractionalQty;
+    const pnlPct = ((currentPrice - pos.entryPrice) / pos.entryPrice) * 100;
+    const result = await executeMarketOrder(pos.ticker, 'sell', pos.dollarAmount, currentPrice, reason);
+    if (!result.error) {
+      const closedHistory = [...(pos.stateHistory || []),
+        { state: TRADE_STATES.EXIT_PENDING, at: new Date().toISOString(), reason },
+        { state: TRADE_STATES.CLOSED,       at: new Date().toISOString(), exitPrice: currentPrice, pnl: +pnl.toFixed(2) },
+      ];
+      recordClosedTrade({
+        ticker: pos.ticker, side: pos.side, dollarAmount: pos.dollarAmount,
+        entryPrice: pos.entryPrice, exitPrice: currentPrice,
+        pnl: +pnl.toFixed(2), pnlPct: +pnlPct.toFixed(2),
+        signals: pos.signals, setupScore: pos.setupScore, rationale: pos.rationale,
+        exitReason: reason, entryTime: pos.entryTime, exitTime: new Date().toISOString(),
+        date: today, isLive: !DRY_RUN,
+        state: TRADE_STATES.CLOSED, stateHistory: closedHistory,
+      });
+      removeOpenPosition(pos.ticker);
+      console.log(`  [${pos.ticker}] Flattened @ $${currentPrice} | P&L: ${pnl >= 0 ? '+' : ''}$${pnl.toFixed(2)}`);
+    } else {
+      console.error(`  [${pos.ticker}] Flatten FAILED: ${result.error} — CHECK ROBINHOOD MANUALLY`);
+    }
   }
 }
 
@@ -1239,9 +1370,17 @@ async function preflightChecks() {
       const portResult = await rhMCP('get_portfolio', { account_number: acct });
       const port = portResult?.data || portResult || {};
       balance = parseFloat(port?.equity_value || port?.total_value || 0);
+      const prefBP = parseFloat(port?.buying_power?.buying_power || port?.buying_power || 0);
       if (balance > 0) {
-        console.log(`  ✅ Account balance: $${balance.toFixed(2)}`);
-        console.log(`  ✅ Position size: $${computePositionDollars(balance)} (${(POSITION_PCT*100).toFixed(0)}% of balance)`);
+        console.log(`  ✅ Account equity: $${balance.toFixed(2)}`);
+        if (prefBP > 0) {
+          const unsettledPct = ((balance - prefBP) / balance) * 100;
+          const sizeBase = prefBP > 0 ? prefBP : balance;
+          console.log(`  ✅ Buying power (settled cash): $${prefBP.toFixed(2)}${unsettledPct > 10 ? ` ⚠️  ${unsettledPct.toFixed(1)}% unsettled — GFV risk` : ''}`);
+          console.log(`  ✅ Position size: $${computePositionDollars(sizeBase)} (${(POSITION_PCT*100).toFixed(0)}% of buying power)`);
+        } else {
+          console.log(`  ✅ Position size: $${computePositionDollars(balance)} (${(POSITION_PCT*100).toFixed(0)}% of equity — buying_power not reported)`);
+        }
         CIRCUIT.weekStartBalance = CIRCUIT.weekStartBalance || balance;
         // Item 17: save SOD balance once per day
         if (!loadSODBalance()) {
@@ -1357,7 +1496,7 @@ Phase 4 — Sam validation (only after independent scoring):
   get_sam_market_outlook → macro framework if needed
 
 Phase 5 — Execute:
-  place_trade → only if P(win) > 0.55 AND earnings check passed
+  place_trade → only if setup_score > 0.55 AND earnings check passed
   save_tomorrow_watchlist → tickers scoring 0.45–0.55
 
 ═══════════════════════════════════════════════════════════════
@@ -1476,7 +1615,7 @@ async function runScan() {
   const finalText = response.content.filter(b => b.type === 'text').map(b => b.text).join('\n');
   const outPath   = join(OUTPUT_DIR, `recommendations-${today}.md`);
   const header    = CIRCUIT.tradesExecuted.length
-    ? `# Scan Report — ${today}\n\n## Trades\n${CIRCUIT.tradesExecuted.map(t => `- ${t.side.toUpperCase()} $${t.dollarAmount} ${t.ticker} @ $${t.entryPrice} | P(win)=${t.pWin?.toFixed(2)}`).join('\n')}\n\n`
+    ? `# Scan Report — ${today}\n\n## Trades\n${CIRCUIT.tradesExecuted.map(t => `- ${t.side.toUpperCase()} $${t.dollarAmount} ${t.ticker} @ $${t.entryPrice} | score=${t.setupScore?.toFixed(2)}`).join('\n')}\n\n`
     : `# Scan Report — ${today}\n\n`;
   writeFileSync(outPath, header + finalText);
   console.log(`\n✅ Scan report: ${outPath}`);
@@ -1553,8 +1692,9 @@ async function runCheck() {
           ticker: pos.ticker, side: pos.side, dollarAmount: pos.dollarAmount,
           entryPrice: pos.entryPrice, exitPrice: currentPrice,
           pnl: parseFloat(pnl.toFixed(2)), pnlPct: parseFloat(pnlPct.toFixed(2)),
-          signals: pos.signals, pWin: pos.pWin, rationale: pos.rationale,
+          signals: pos.signals, setupScore: pos.setupScore, rationale: pos.rationale,
           exitReason, entryTime: pos.entryTime, exitTime: new Date().toISOString(), date: today,
+          state: TRADE_STATES.CLOSED, isLive: !DRY_RUN,
         });
         removeOpenPosition(pos.ticker);
 
@@ -1613,7 +1753,8 @@ async function runForceClose() {
         ticker: pos.ticker, side: pos.side, dollarAmount: pos.dollarAmount,
         entryPrice: pos.entryPrice, exitPrice: currentPrice,
         pnl: parseFloat(pnl.toFixed(2)), pnlPct: parseFloat(pnlPct.toFixed(2)),
-        signals: pos.signals, pWin: pos.pWin, rationale: pos.rationale,
+        signals: pos.signals, setupScore: pos.setupScore, rationale: pos.rationale,
+        state: TRADE_STATES.CLOSED, isLive: !DRY_RUN,
         exitReason: 'force-close 12:45pm PT', entryTime: pos.entryTime,
         exitTime: new Date().toISOString(), date: today,
       });
@@ -1755,6 +1896,19 @@ async function runEOD() {
 
 // ─── Main ─────────────────────────────────────────────────────────────────────
 async function main() {
+  // Item 38: manual circuit breaker reset — does NOT require a market day check
+  if (MODE === 'reset-circuit') {
+    const state = loadCircuitBreakerState();
+    if (!state.tripped) {
+      console.log('[reset-circuit] Circuit breaker is NOT currently tripped — nothing to reset.');
+      return;
+    }
+    saveCircuitBreakerState({ tripped: false, resetAt: new Date().toISOString(), previousTrip: state });
+    console.log(`[reset-circuit] ✅ Circuit breaker reset. Previous trip: ${state.reason} (at ${state.trippedAt})`);
+    console.log('[reset-circuit] Trading will resume on next scan run.');
+    return;
+  }
+
   // Item 23: live market-day check — fail closed if Yahoo Finance unavailable
   const trading = await isMarketDay();
   if (!trading) {
@@ -1766,7 +1920,7 @@ async function main() {
   if (MODE === 'check')       return runCheck();
   if (MODE === 'force-close') return runForceClose();
   if (MODE === 'eod')         return runEOD();
-  console.error(`Unknown mode: ${MODE}. Use: scan | check | force-close | eod`);
+  console.error(`Unknown mode: ${MODE}. Use: scan | check | force-close | eod | reset-circuit`);
   process.exit(1);
 }
 
