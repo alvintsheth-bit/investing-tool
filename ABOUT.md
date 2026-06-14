@@ -501,7 +501,7 @@ Each closed trade has:
   "pnl": 15.60, "pnlPct": 1.56,
   "exitReason": "target hit",
   "signals": { "premarket_gap_up": true, "rvol_spike": true, ... },
-  "pWin": 0.68
+  "setupScore": 0.68
 }
 ```
 
