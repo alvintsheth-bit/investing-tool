@@ -542,6 +542,8 @@ async function getPreMarketData(ticker) {
       : gapPct > 5 ? 'low'
       : gapPct > 2 ? 'medium'
       : 'high',
+    // Explicit boolean: gap > 5% historically holds momentum (gap_fill_low_prob signal)
+    gapFillLowProb: gapPct !== null && gapPct > 5,
   };
 }
 
