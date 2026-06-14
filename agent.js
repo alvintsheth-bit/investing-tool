@@ -55,7 +55,7 @@ if (dayOfWeek === 0 || dayOfWeek === 6 || US_MARKET_HOLIDAYS_2026.has(today)) {
 const SIGNAL_KEYS = [
   'premarket_gap_up',    // gap >2% pre-market on elevated volume
   'rvol_spike',          // relative volume >2x 30-day pre-market avg
-  'gap_fill_low_prob',   // historical patterns suggest gap holds (momentum)
+  'gap_likely_holds',    // gap >5%: historically holds momentum intraday (true = bullish)
   'macro_tailwind',      // macro/VIX environment favorable for risk-on
   'sector_leading',      // sector ETF up strongly pre-market
   'news_catalyst',       // clear overnight/pre-market catalyst
@@ -542,7 +542,7 @@ async function getPreMarketData(ticker) {
       : gapPct > 5 ? 'low'
       : gapPct > 2 ? 'medium'
       : 'high',
-    // Explicit boolean: gap > 5% historically holds momentum (gap_fill_low_prob signal)
+    // true = gap >5% → historically holds intraday (momentum signal, feeds gap_likely_holds)
     gapFillLowProb: gapPct !== null && gapPct > 5,
   };
 }
@@ -833,7 +833,7 @@ const tools = [
           properties: {
             premarket_gap_up:   { type: 'boolean' },
             rvol_spike:         { type: 'boolean' },
-            gap_fill_low_prob:  { type: 'boolean' },
+            gap_likely_holds:   { type: 'boolean' },
             macro_tailwind:     { type: 'boolean' },
             sector_leading:     { type: 'boolean' },
             news_catalyst:      { type: 'boolean' },
@@ -1097,7 +1097,7 @@ HARD EXCLUDES (never trade):
 SIGNAL SCORING (P(win) via logistic model or equal-weight fallback):
   premarket_gap_up    +++ gap >2% pre-market on elevated volume — PRIMARY signal
   rvol_spike          +++ relative volume >2x 30-day pre-market avg
-  gap_fill_low_prob   ++  gap >5% historically holds momentum
+  gap_likely_holds    ++  gap >5%: true = gap holds momentum intraday (not filled)
   news_catalyst       ++  clear overnight/pre-market catalyst (not rumors)
   sector_leading      +   sector ETF moving strongly pre-market
   macro_tailwind      +   VIX low/falling, broad market green pre-market

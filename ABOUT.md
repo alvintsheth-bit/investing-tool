@@ -29,9 +29,9 @@
 19. [File Structure](#19-file-structure)
 20. [Environment Variables](#20-environment-variables)
 21. [How to Run](#21-how-to-run)
-21. [Technology Stack](#21-technology-stack)
-22. [APIs & Services Used](#22-apis--services-used)
-23. [Why Credits Deplete Fast](#23-why-credits-deplete-fast)
+22. [Technology Stack](#22-technology-stack)
+23. [APIs & Services Used](#23-apis--services-used)
+24. [Why Credits Deplete Fast](#24-why-credits-deplete-fast)
 
 ---
 
@@ -319,10 +319,10 @@ Formula: `(preMarketPrice - prevClose) / prevClose * 100 > 2`
 Pre-market volume >2× the 30-day daily average × 0.08 (pre-market is ~8% of daily session).
 High RVOL = institutional activity, not retail noise.
 
-**`gap_fill_low_prob`** — Gap sustainability
-Gap >5%: historically holds intraday (low fill probability = momentum trade).
-Gap 2-5%: medium probability.
-Gap <2%: high fill probability, avoid.
+**`gap_likely_holds`** — Gap sustainability
+Fires `true` when gap >5%: historically the gap holds intraday (momentum continues).
+Gap 2-5%: medium probability — signal fires `false`.
+Gap <2%: high fill probability — signal fires `false`, avoid.
 Derived from NASDAQ historical patterns in `output/knowledge-base/nasdaq-historical.md`.
 
 ### Context Signals
@@ -402,7 +402,7 @@ Every executed trade produces two permanent records:
     "signals": {
       "premarket_gap_up": true,
       "rvol_spike": true,
-      "gap_fill_low_prob": true,
+      "gap_likely_holds": true,
       "macro_tailwind": true,
       "sector_leading": true,
       "news_catalyst": false,
@@ -521,7 +521,7 @@ Method: L2-regularized logistic regression, pure JS gradient descent
 SIGNAL MODEL (trained on 87 trades, updated 2026-06-14)
   premarket_gap_up          coef: +0.820
   rvol_spike                coef: +0.610
-  gap_fill_low_prob         coef: +0.440
+  gap_likely_holds          coef: +0.440
   ...
   Walk-forward: this week 64% | last week 61%
 ```
@@ -900,7 +900,7 @@ Sam's site is WordPress with JavaScript-rendered dropdowns, tabs, and slides. St
 
 ---
 
-## 22. APIs & Services Used
+## 23. APIs & Services Used
 
 | Service | Cost | Auth | Purpose |
 |---------|------|------|---------|
@@ -918,7 +918,7 @@ Sam's site is WordPress with JavaScript-rendered dropdowns, tabs, and slides. St
 
 ---
 
-## 23. Why Credits Deplete Fast
+## 24. Why Credits Deplete Fast
 
 The agent uses **Claude Sonnet 4.6** (analyze) and **Claude Haiku 4.5** (EOD) — tiered by task complexity:
 
