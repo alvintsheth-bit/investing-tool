@@ -83,7 +83,7 @@ DAILY  6:00 AM — agent.js scan (30 min before open, Claude Sonnet, 20 iteratio
 DAILY  6:25 AM — exit-daemon.js (long-running daemon, runs until 1pm PT)
                  • Polls open positions every 45 seconds — pure code fast loop
                  • Stop/target hit → market sell immediately
-                 • Updates opening-range stop after 6:35am PT (first 15 min bars)
+                 • Updates opening-range stop after 6:45am PT (all 3 five-min bars complete)
                  • Haiku thesis-break check every 90 min (VIX spike, halt news)
                  • Tracks MFE/MAE per position on every poll
                  • Quote unavailable 5× in a row → force-close for safety
@@ -442,8 +442,11 @@ Each trade gets a dedicated markdown file documenting:
 - **Sam Weiss alignment** — his explicit stance and framework guidance
 - **Technical snapshot** — RSI, 52W position, MA50/200, volume
 - **All 10 signal verdicts** — ✅ or ❌ for each signal
-- **Stop/target levels** — ATR-14 at entry; opening-range stop updated after 6:35am PT if OR low is tighter
+- **Stop/target levels** — ATR-14 at entry; opening-range stop updated after 6:45am PT if OR low is tighter (never loosens); immediate exit if price already below new OR stop when check fires
 - **Fill price confirmation** — live mode polls broker post-order for actual fill; slippage logged if >2%
+- **Order state machine** — every trade tracks explicit states with timestamps:
+  `CANDIDATE → ORDER_SUBMITTED → ORDER_PENDING → FILLED → PROTECTED → EXIT_PENDING → CLOSED`
+  Stop/target only enforced once `PROTECTED`. Entry slippage computed at `FILLED` state from confirmed fill price.
 - **Robinhood order result** — raw JSON confirmation (or DRY RUN output)
 
 This creates a permanent, auditable record of every trading decision — enabling post-mortems and long-term signal calibration.
@@ -456,23 +459,28 @@ All limits pull live account balance dynamically at the start of each run. Canno
 
 ### Position Size (Pilot Mode, default)
 ```
-PILOT_MODE=true  → 1 position max, 10% of balance per trade
-PILOT_MODE=false → 2 positions max, 17.5% of balance per trade
+PILOT_MODE=true  → 1 position max, 10% of buying_power per trade
+PILOT_MODE=false → 2 positions max, 17.5% of buying_power per trade
 ```
-Dollar-denominated → fractional quantity = dollarAmount / price. Robinhood supports fractional NMS-listed stocks.
+Sized from **settled buying power** (not total equity) to avoid good-faith-violation risk from unsettled T+1 proceeds. Pre-flight logs a warning if buying_power < 90% of equity. Dollar-denominated → fractional quantity = dollarAmount / price.
 
 ### Max Concurrent Positions
 `checkMaxConcurrent(openPositions)` — blocks new entries if at/above limit (1 in pilot, 2 in full).
 
 ### Daily Loss Limit (1.5% of SOD balance)
 ```
-sodBalance   = balance saved at first scan of the day (sod-balance.json)
-realized     = sum(closed trade P&L today)
-unrealized   = sum(open position currentPnl)
-dailyLoss%   = (realized + unrealized) / sodBalance
-if dailyLoss% ≤ -1.5%: CIRCUIT.tripped = true — no new trades
+sodBalance      = balance saved at first scan of the day (sod-balance.json)
+brokerEquity    = get_portfolio equity_value (authoritative source)
+dailyLoss%      = (brokerEquity - sodBalance) / sodBalance
+cross-check     = local (realized + unrealized) / sodBalance — warns if >2% discrepancy
+if dailyLoss% ≤ -1.5%:
+  → save circuit-breaker.json (tripped=true, does NOT auto-clear)
+  → flatten ALL open positions (market sell)
+  → send alert email
+  → block all new trades
+  → manual reset required: node agent.js reset-circuit
 ```
-Uses SOD balance (not current balance) to prevent the circuit breaker from shrinking as losses accumulate. Counts both realized and unrealized P&L.
+Uses broker-reported equity as the authoritative P&L source. Local trade log is cross-checked but not controlling. Persistent state survives process restarts — next day's scan still blocks until manually reset.
 
 ### Weekly Drawdown Breaker (5%)
 ```
@@ -500,7 +508,7 @@ Initial stop:
   stopDistancePct = clamp((ATR14 / price) × 0.75, 1.0%, 4.0%)
   targetDistancePct = stopDistancePct × 1.5  (1.5:1 reward:risk)
 
-Opening range update (after 6:35am PT):
+Opening range update (after 6:45am PT — all 3 bars complete):
   OR low = min of first 3 five-minute bars after open
   if OR low > ATR stop price (tighter stop): update stop to OR low
 ```
@@ -810,6 +818,7 @@ investing-tool/
 │   ├── signal-weights.json          # Logistic regression model coefficients
 │   ├── watchlist-tomorrow.json      # Tomorrow's pre-market gap candidates
 │   ├── sod-balance.json             # Start-of-day balance (circuit breaker baseline)
+│   ├── circuit-breaker.json         # Persistent trip state — cleared by: node agent.js reset-circuit
 │   ├── expectancy-log.json          # Daily expectancy/profit-factor history
 │   ├── rejected-candidates.json     # Shadow log: 0.45–0.55 score candidates + EOD prices
 │   │
@@ -909,6 +918,7 @@ npm run scrape        # 5:30am — scrape today's sam-weiss.com data
 npm run scan          # 6:00am — day trade scan + execute (alias: npm run analyze)
 npm run exit-daemon   # 6:25am — start exit monitor (runs until ~1pm)
 npm run force-close   # 12:45pm — failsafe close all positions
+node agent.js reset-circuit  # manual: clear circuit breaker (does not require market day)
 npm run eod           # 1:30pm — EOD report + email + model retrain
 npm run monitor       # 2:15pm — health check
 npm run run           # scrape + scan back-to-back
