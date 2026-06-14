@@ -41,9 +41,9 @@ A fully automated personal **day-trading** agent that runs a complete intraday c
 
 - **Scrapes** sam-weiss.com daily at 5:30am for trade alerts, watchlist, and briefings. Rebuilds the full knowledge base every Sunday
 - **Scans** pre-market gappers at 6:00am (30 min before open), scoring candidates using a logistic regression model trained on historical signal outcomes
-- **Executes** fractional-share, dollar-denominated market orders on Robinhood's Agentic Trading sub-account (account 674082664) — max 2 concurrent positions, 17.5% of balance per trade
-- **Monitors** open positions at 8:00am, 9:30am, and 11:00am — exits on stop/target hits or thesis-break events (Haiku judges borderline cases)
-- **Force-closes** all open positions at 12:45pm PT (15 min before 1pm PT market close) with pure code — no Claude call
+- **Executes** fractional-share, dollar-denominated market orders on Robinhood's Agentic Trading sub-account (account 674082664) — pilot mode: 1 position max, 10% sizing; full mode: 2 positions, 17.5%
+- **Monitors** open positions continuously via exit-daemon (45-second poll loop, 6:25am–1pm PT) — exits on stop/target hits or thesis-break events (Haiku judges borderline cases)
+- **Force-closes** all open positions at 12:45pm PT (failsafe only — daemon handles primary exits; early-close days: 9:45am)
 - **Trains** a logistic regression model at EOD on all closed trades (features: 10 signal binaries + continuous values, L2 regularized, 80/20 blended with prior day's weights)
 - **Reports** daily realized P&L vs QQQ benchmark + learnings — emailed at 1:30pm PT
 - **DRY_RUN mode** (default `true`) logs all intended orders without submitting — set `DRY_RUN=false` in `.env` to go live
@@ -264,7 +264,7 @@ Scraped the entire site on first run. Handles complex interactive pages:
 
 **File:** `agent.js`
 **Model:** `claude-sonnet-4-6` (analyze) / `claude-haiku-4-5-20251001` (EOD)
-**Max iterations:** 20 (analyze) / 12 (EOD) tool-use loops per session
+**Max iterations:** 20 (analyze) / 10 (EOD) tool-use loops per session
 **Max tokens per response:** 8,192
 
 ### How the Agentic Loop Works
@@ -276,7 +276,7 @@ Scraped the entire site on first run. Handles complex interactive pages:
 4. Claude responds with tool_use blocks
 5. Execute each tool (FMP, Yahoo Finance, Reddit, DuckDuckGo, Robinhood, etc.)
 6. Return tool_result to Claude
-7. Repeat until stop_reason === 'end_turn' or 30 iterations
+7. Repeat until stop_reason === 'end_turn' or iteration limit (20 scan / 10 EOD)
 8. Save final text response to output/recommendations-YYYY-MM-DD.md
 ```
 
@@ -307,7 +307,7 @@ The agent is explicitly instructed:
 2. Discover candidate stocks from web search and signals BEFORE reading Sam's view
 3. Score candidates using 10 independent signals (Sam NOT included)
 4. THEN consult Sam: his stance adjusts position size (full/standard/small) but not score
-5. Execute if P(win) >0.55 — Sam's stance adjusts size (full/standard/small) but not the threshold
+5. Execute if setup_score >0.55 — Sam's stance provides context; model-driven sizing only after 200 live trades
 
 ### Modes
 - `node agent.js` — analyze + trade (6:00am)
@@ -317,7 +317,7 @@ The agent is explicitly instructed:
 
 ## 7. Signal Stack — 10 Day-Trading Signals
 
-All 10 signals feed a logistic regression model. Until 60 trades of history exist, equal-weight scoring is used (P(win) = active signals / 10).
+All 10 signals feed a logistic regression model. Until 60 trades of history exist, equal-weight scoring is used (setup_score = active signals / 10).
 
 ### Primary Signals (day-trade specific)
 
@@ -352,31 +352,36 @@ Derived from NASDAQ historical patterns in `output/knowledge-base/nasdaq-histori
 **`analyst_conviction`** — 2+ recent analyst upgrades or significant price target raise in the last 30 days.
 
 ### Sam Weiss (validation lens, not a signal)
-`search_sam_weiss_briefings(ticker)` and `get_sam_market_outlook` are available after independent research. Sam's stance does NOT change P(win) — it informs position context.
+`search_sam_weiss_briefings(ticker)` and `get_sam_market_outlook` are available after independent research. Sam's stance does NOT change setup_score — it informs position context.
 
 ---
 
 ## 8. Scoring System — Logistic Regression
 
 ### Model
-P(win) = sigmoid(Σ coef_i × signal_i + intercept)
+setup_score = sigmoid(Σ coef_i × signal_i + intercept)
 
-Trained daily at EOD using L2-regularized logistic regression in pure JavaScript (gradient descent, 500 epochs, lr=0.05, λ=0.01). No external ML libraries.
+Trained daily at EOD using L2-regularized logistic regression in pure JavaScript (gradient descent, 500 epochs, lr=0.05, λ=0.01). No external ML libraries. `setup_score` is a model output used as an entry threshold — it is NOT a calibrated win probability.
 
 **Thresholds:**
-| P(win) | Action |
-|--------|--------|
-| > 0.70 | Full position (high confidence) |
-| > 0.55 | Standard position |
-| 0.45–0.55 | Watch only — log for training data |
+| setup_score | Action |
+|-------------|--------|
+| > 0.55 | Enter trade (pilot: 1 position / 10% sizing) |
+| 0.45–0.55 | Shadow-log only via `log_rejected_candidate` |
 | < 0.45 | Avoid |
+
+Model-driven variable sizing (based on score confidence) is reserved until 200 live trades are logged (`isLive: true` field). Before that, all qualifying trades use flat pilot sizing.
 
 **Hard excludes (regardless of score):**
 - Earnings today before close
 - Past 10am PT entry window
-- Already at 2 concurrent positions
+- Already at max concurrent positions (pilot: 1, full: 2)
+- 3 consecutive losses (paused for manual review)
+- Broker reconciliation mismatch
 
-**Fallback (< 60 trades):** Equal-weight — P(win) = active signal count / 10
+**Fallback (< 60 trades):** Equal-weight — setup_score = active signal count / 10
+
+**Variance check:** `trainModel()` warns if any signal feature has variance < 0.04, which indicates an entry filter is firing on nearly all candidates (model would learn nothing useful from that signal).
 
 ### Walk-Forward Validation
 At EOD, coefficients from this week are compared against last week on held-out trades. Accuracy reported in EOD email. New coefficients are 80/20 blended with prior day's to prevent overfitting.
@@ -437,7 +442,8 @@ Each trade gets a dedicated markdown file documenting:
 - **Sam Weiss alignment** — his explicit stance and framework guidance
 - **Technical snapshot** — RSI, 52W position, MA50/200, volume
 - **All 10 signal verdicts** — ✅ or ❌ for each signal
-- **ATR-14 stop/target levels** — computed at entry
+- **Stop/target levels** — ATR-14 at entry; opening-range stop updated after 6:35am PT if OR low is tighter
+- **Fill price confirmation** — live mode polls broker post-order for actual fill; slippage logged if >2%
 - **Robinhood order result** — raw JSON confirmation (or DRY RUN output)
 
 This creates a permanent, auditable record of every trading decision — enabling post-mortems and long-term signal calibration.
@@ -448,36 +454,62 @@ This creates a permanent, auditable record of every trading decision — enablin
 
 All limits pull live account balance dynamically at the start of each run. Cannot be overridden by Claude.
 
-### Position Size (17.5% of balance)
+### Position Size (Pilot Mode, default)
 ```
-computePositionDollars(balance) = balance × 0.175
+PILOT_MODE=true  → 1 position max, 10% of balance per trade
+PILOT_MODE=false → 2 positions max, 17.5% of balance per trade
 ```
 Dollar-denominated → fractional quantity = dollarAmount / price. Robinhood supports fractional NMS-listed stocks.
 
-### Max Concurrent Positions (2)
-`checkMaxConcurrent(openPositions)` — blocks new entries if 2 positions already open in `trades-open.json`.
+### Max Concurrent Positions
+`checkMaxConcurrent(openPositions)` — blocks new entries if at/above limit (1 in pilot, 2 in full).
 
-### Daily Loss Limit (5% of balance)
+### Daily Loss Limit (1.5% of SOD balance)
 ```
-dailyLoss% = sum(open position P&L) / currentBalance
-if dailyLoss% < -5%: CIRCUIT.tripped = true — no new trades
+sodBalance   = balance saved at first scan of the day (sod-balance.json)
+realized     = sum(closed trade P&L today)
+unrealized   = sum(open position currentPnl)
+dailyLoss%   = (realized + unrealized) / sodBalance
+if dailyLoss% ≤ -1.5%: CIRCUIT.tripped = true — no new trades
 ```
+Uses SOD balance (not current balance) to prevent the circuit breaker from shrinking as losses accumulate. Counts both realized and unrealized P&L.
 
-### Weekly Drawdown Breaker (15%)
+### Weekly Drawdown Breaker (5%)
 ```
 weeklyLoss% = (currentBalance - weekStartBalance) / weekStartBalance
-if weeklyLoss% < -15%: CIRCUIT.tripped = true — MANUAL REVIEW REQUIRED
+if weeklyLoss% ≤ -5%: CIRCUIT.tripped = true — MANUAL REVIEW REQUIRED
 ```
 
-### Stop Loss: ATR-14 Based
+### Consecutive-Loss Pause
 ```
-stopDistancePct = clamp((ATR14 / price) × 0.75, 1.0%, 4.0%)
-targetDistancePct = stopDistancePct × 1.5  (1.5:1 reward:risk)
+checkConsecutiveLosses() — reads last 3 completed trades from trades-log.json
+if all 3 are losses: block new entries with reason "3 consecutive losses — paused for manual review"
 ```
-Stop enforced by exit manager polling, NOT by broker-side stop orders (Robinhood only supports market orders for fractional shares). Effective stop = ±1 check interval (max 90 min gap).
+Applies in both DRY_RUN and live mode.
 
-### Hard Force-Close (12:45pm PT)
-Pure code, no Claude, no exceptions. Market sell on every open position 15 minutes before 1pm PT close. Skipped on early-close days.
+### Broker Reconciliation
+```
+reconcilePositions(acct) — compares trades-open.json vs get_equity_positions
+on mismatch: send alert email + halt all trading
+```
+Called at scan start and again before every trade execution.
+
+### Stop Loss: ATR-14 + Opening Range
+```
+Initial stop:
+  stopDistancePct = clamp((ATR14 / price) × 0.75, 1.0%, 4.0%)
+  targetDistancePct = stopDistancePct × 1.5  (1.5:1 reward:risk)
+
+Opening range update (after 6:35am PT):
+  OR low = min of first 3 five-minute bars after open
+  if OR low > ATR stop price (tighter stop): update stop to OR low
+```
+Stop enforced by exit-daemon polling every 45 seconds — no 90-minute gap risk. Robinhood only supports market orders for fractional shares; no broker-side stop orders.
+
+### Hard Force-Close (failsafe)
+- **Primary:** exit-daemon force-closes at 12:45pm PT (9:45am on early-close days)
+- **Failsafe:** `agent.js force-close` at 12:45pm verifies daemon closed everything; closes any remainder
+- Pure code, no Claude, no exceptions.
 
 ### Robinhood Account
 - Account number: 674082664
@@ -498,12 +530,19 @@ Each closed trade has:
 {
   "ticker": "NVDA", "date": "2026-06-14",
   "entryPrice": 205.19, "exitPrice": 208.40,
+  "decisionPrice": 205.00, "slippagePct": 0.09,
   "pnl": 15.60, "pnlPct": 1.56,
   "exitReason": "target hit",
   "signals": { "premarket_gap_up": true, "rvol_spike": true, ... },
-  "setupScore": 0.68
+  "setupScore": 0.68,
+  "isLive": false,
+  "maxFavorableExcursion": 1.8,
+  "maxAdverseExcursion": -0.4
 }
 ```
+
+### Shadow Logging (`rejected-candidates.json`)
+Candidates scoring 0.45–0.55 (below entry threshold) are logged via `log_rejected_candidate`. At EOD, their actual closing price is filled in for shadow P&L tracking — enables calibrating the threshold over time.
 
 ### Model Training (EOD)
 ```
@@ -644,8 +683,11 @@ Robinhood MCP returns `text/event-stream` format, not JSON. The `rhPost()` funct
 **Email:** `alvintsheth@gmail.com` via nodemailer + Gmail App Password
 
 ### Report Contents
-1. **P&L Summary** — per trade: entry vs force-close price, P&L $ and %, vs QQQ benchmark
+1. **P&L Summary** — per trade: entry vs exit price, P&L $ and %, vs QQQ benchmark
 2. **Key Learnings** — which signals fired/missed, what to do differently tomorrow
+
+### Expectancy Metrics (`expectancy-log.json`)
+Each EOD run appends: win rate, avg win $, avg loss $, expectancy ($/trade), profit factor. Tracked over time to detect model drift.
 
 ### Gmail Configuration
 ```
@@ -677,10 +719,8 @@ All jobs perform a market-day check at startup (weekends exit immediately; holid
 Located at `~/Library/LaunchAgents/`:
 - `com.investing-tool.scrape.plist`
 - `com.investing-tool.analyze.plist` (runs `agent.js scan`)
-- `com.investing-tool.check-8am.plist`
-- `com.investing-tool.check-930am.plist`
-- `com.investing-tool.check-11am.plist`
-- `com.investing-tool.force-close.plist` (runs `agent.js force-close`)
+- `com.investing-tool.exit-daemon.plist` (runs `exit-daemon.js`, long-running 6:25am–1pm)
+- `com.investing-tool.force-close.plist` (runs `agent.js force-close` — failsafe)
 - `com.investing-tool.eod.plist`
 - `com.investing-tool.monitor.plist`
 - `com.investing-tool.kb-weekly.plist`
@@ -689,8 +729,8 @@ Located at `~/Library/LaunchAgents/`:
 `output/logs/`:
 - `scrape.log` — 5:30am scraper output
 - `analyze.log` — 6:00am scan output
-- `check.log` — 8am/9:30am/11am exit manager output (shared)
-- `force-close.log` — 12:45pm force-close output
+- `exit-daemon.log` — 6:25am daemon output (continuous, appended through 1pm)
+- `force-close.log` — 12:45pm force-close failsafe output
 - `eod.log` — 1:30pm EOD report output
 - `monitor.log` — 2:15pm health check output
 - `kb-weekly.log` — Sunday KB update output
@@ -699,7 +739,7 @@ Located at `~/Library/LaunchAgents/`:
 ```bash
 launchctl start com.investing-tool.scrape
 launchctl start com.investing-tool.analyze
-launchctl start com.investing-tool.check-8am
+launchctl start com.investing-tool.exit-daemon
 launchctl start com.investing-tool.force-close
 launchctl start com.investing-tool.eod
 launchctl start com.investing-tool.monitor
@@ -720,7 +760,7 @@ The nvm-managed Node is hardcoded in all plists:
 **Schedule:** 2:15pm PT daily (after EOD completes)
 **Cost:** $0 — pure code, no Claude API calls
 
-Runs 5 checks every trading day and sends a failure email if anything is wrong:
+Runs 6 checks every trading day and sends a failure email if anything is wrong:
 
 | Check | Pass condition | Failure means |
 |-------|---------------|---------------|
@@ -728,7 +768,8 @@ Runs 5 checks every trading day and sends a failure email if anything is wrong:
 | Scan | `recommendations-{today}.md` exists | scan agent crashed |
 | EOD | `eod-report-{today}.md` exists | EOD agent crashed |
 | Positions cleared | `trades-open.json` has 0 entries | force-close failed to close something — **check Robinhood immediately** |
-| Force-close log | `force-close.log` touched after 12:45pm | launchd job never fired |
+| Exit-daemon log | `exit-daemon.log` touched after 6:25am | daemon never started — positions had no monitor |
+| Force-close log | `force-close.log` touched after 12:45pm | failsafe job never fired |
 
 On failure: email subject is `🚨 Investing Agent — N failure(s) on YYYY-MM-DD` with details on which checks failed and what to look at.
 
@@ -746,10 +787,11 @@ launchctl start com.investing-tool.monitor
 
 ```
 investing-tool/
-├── agent.js                          # Main investing agent (~1200 lines)
+├── agent.js                          # Main investing agent + EOD + force-close
+├── exit-daemon.js                    # Long-running exit monitor (6:25am–1pm, 45s poll)
 ├── monitor.js                        # Daily health checker (pure code, no Claude)
-├── scraper.js                        # Daily morning scraper (194 lines)
-├── scraper-knowledge-base.js         # Full KB + weekly updater (~800 lines)
+├── scraper.js                        # Daily morning scraper
+├── scraper-knowledge-base.js         # Full KB + weekly updater
 ├── robinhood-auth.js                 # One-time OAuth PKCE flow
 ├── debug-page.js                     # Dev utility for inspecting scraped pages
 ├── package.json                      # Node.js project config (ESM)
@@ -767,17 +809,20 @@ investing-tool/
 │   ├── trades-open.json             # Today's open positions (reset daily)
 │   ├── signal-weights.json          # Logistic regression model coefficients
 │   ├── watchlist-tomorrow.json      # Tomorrow's pre-market gap candidates
+│   ├── sod-balance.json             # Start-of-day balance (circuit breaker baseline)
+│   ├── expectancy-log.json          # Daily expectancy/profit-factor history
+│   ├── rejected-candidates.json     # Shadow log: 0.45–0.55 score candidates + EOD prices
 │   │
 │   ├── trades/                      # Per-trade rationale files
-│   │   ├── 2026-06-14-NVDA-buy.md  # Entry data, signals, P(win), exit outcome
+│   │   ├── 2026-06-14-NVDA-buy.md  # Entry data, signals, setup_score, exit outcome
 │   │   ├── 2026-06-14-NVDA-buy-DRY.json  # Dry-run order log (when DRY_RUN=true)
 │   │   └── ...
 │   │
 │   ├── logs/
 │   │   ├── scrape.log               # 5:30am scraper output
 │   │   ├── analyze.log              # 6:00am scan output
-│   │   ├── check.log                # 8am/9:30am/11am exit manager output
-│   │   ├── force-close.log          # 12:45pm force-close output
+│   │   ├── exit-daemon.log          # 6:25am–1pm daemon output (continuous)
+│   │   ├── force-close.log          # 12:45pm failsafe output
 │   │   ├── eod.log                  # 1:30pm EOD output
 │   │   ├── monitor.log              # 2:15pm health check output
 │   │   └── kb-weekly.log            # Sunday KB update
@@ -862,9 +907,10 @@ npx playwright install chromium
 ```bash
 npm run scrape        # 5:30am — scrape today's sam-weiss.com data
 npm run scan          # 6:00am — day trade scan + execute (alias: npm run analyze)
-npm run check         # 8am/9:30am/11am — exit manager
-npm run force-close   # 12:45pm — hard close all positions
+npm run exit-daemon   # 6:25am — start exit monitor (runs until ~1pm)
+npm run force-close   # 12:45pm — failsafe close all positions
 npm run eod           # 1:30pm — EOD report + email + model retrain
+npm run monitor       # 2:15pm — health check
 npm run run           # scrape + scan back-to-back
 ```
 
