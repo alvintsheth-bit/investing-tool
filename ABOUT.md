@@ -66,45 +66,54 @@ DAILY  5:30 AM — scraper.js
                  • Saves output/sam-weiss-YYYY-MM-DD.json
                  • Logs to output/logs/scrape.log
 
-DAILY  6:00 AM — agent.js scan (30 min before open, Claude Sonnet)
-                 • Pre-flight: verify account balance, DRY_RUN status, holiday check
+DAILY  6:00 AM — agent.js scan (30 min before open, Claude Sonnet, 20 iterations)
+                 • Live market-day check via Yahoo Finance (fail closed if unavailable)
+                 • Pre-flight: verify balance, reconcile vs Robinhood, save SOD balance
                  • Phase 1: VIX, Fear & Greed, sector pre-market moves (sets risk appetite)
                  • Phase 2: Discover pre-market gappers (>2% gap, RVOL >2x)
                  • Phase 3: Screen each — get_premarket_data (gap%, RVOL, ATR-14, stop/target)
                  •           news catalyst, Reddit overnight chatter, notable mentions
                  • Phase 4: Sam validation (briefing search + outlook on demand)
-                 • Phase 5: Execute if P(win) > 0.55, log to trades-open.json
+                 • Phase 5: Execute if setup_score > 0.55, log to trades-open.json
+                 •           Shadow-log candidates scoring 0.45–0.55 via log_rejected_candidate
                  • Entry window: 6:00–10:00am PT only. No buys after 10am PT.
+                 • Orders placed pre-6:30am queue for market open (slippage logged)
                  • Logs to output/logs/analyze.log
+
+DAILY  6:25 AM — exit-daemon.js (long-running daemon, runs until 1pm PT)
+                 • Polls open positions every 45 seconds — pure code fast loop
+                 • Stop/target hit → market sell immediately
+                 • Updates opening-range stop after 6:35am PT (first 15 min bars)
+                 • Haiku thesis-break check every 90 min (VIX spike, halt news)
+                 • Tracks MFE/MAE per position on every poll
+                 • Quote unavailable 5× in a row → force-close for safety
+                 • Early-close days: force-close at 9:45am PT instead of 12:45pm
+                 • Logs to output/logs/exit-daemon.log
 
 DAILY  6:30 AM — Market opens (NYSE/NASDAQ)
 
-DAILY  8:00 AM — agent.js check (pure code + Haiku for judgment)
-                 • Fetch current price for each open position
-                 • Stop hit → market sell, log, remove from trades-open.json
-                 • Target hit → market sell, log, done
-                 • Thesis-break check (VIX spike >15%, negative news halt) → Haiku decides
-                 • Logs to output/logs/check.log
-
-DAILY  9:30 AM — agent.js check (same logic)
-
-DAILY 11:00 AM — agent.js check (same logic)
-
-DAILY 12:45 PM — agent.js force-close (pure code, no Claude)
-                 • Hard market sell on every position still open — no exceptions
-                 • Skipped on early-close days (Nov 27, Dec 24)
+DAILY 12:45 PM — agent.js force-close (pure code, no Claude — failsafe only)
+                 • Hard market sell on any position still open (daemon should have handled)
+                 • Early-close days: daemon closes at 9:45am; force-close verifies nothing left
                  • Logs to output/logs/force-close.log
 
 DAILY  1:00 PM — Market closes
 
-DAILY  1:30 PM — agent.js eod (Claude Haiku)
-                 • Retrain logistic regression on all closed trades (60-trade minimum)
+DAILY  1:30 PM — agent.js eod (Claude Haiku, 10 iterations)
+                 • Retrain logistic regression on all closed trades (60-trade min)
                  • 80/20 blend new coefficients with yesterday's → signal-weights.json
                  • Walk-forward validation: this week vs last week accuracy
                  • Generate EOD report: P&L vs QQQ + learnings (2 sections only)
+                 • Compute expectancy, profit factor, win rate → expectancy-log.json
+                 • Update rejected candidates with EOD prices (shadow P&L tracking)
                  • Save tomorrow's watchlist (gap candidates to re-screen)
                  • Email to alvintsheth@gmail.com
                  • Logs to output/logs/eod.log
+
+DAILY  2:15 PM — monitor.js (health check — no Claude, no cost)
+                 • Verifies scrape file, recommendations, EOD report, daemon log all exist
+                 • Checks trades-open.json is empty (positions cleared)
+                 • Alerts alvintsheth@gmail.com if anything is wrong
 ```
 
 ---
@@ -113,8 +122,8 @@ DAILY  1:30 PM — agent.js eod (Claude Haiku)
 
 ```
 ┌─────────────────────────────────────────────────────────────────────┐
-│                          macOS launchd cron                         │
-│  Sun 5am: kb-weekly  |  5:30am: scrape  |  6am: scan  |  8/9:30/11am: check  |  12:45pm: force-close  |  1:30pm: eod│
+│                          macOS launchd (7 jobs)                      │
+│  Sun 5am: kb-weekly  |  5:30am: scrape  |  6am: scan  |  6:25am: exit-daemon  |  12:45pm: force-close  |  1:30pm: eod  |  2:15pm: monitor│
 └──────────────┬──────────────────────────────────────────────────────┘
                │
    ┌───────────▼────────────┐
@@ -132,7 +141,8 @@ DAILY  1:30 PM — agent.js eod (Claude Haiku)
    ┌───────────▼────────────────────────────────┐
    │            agent.js                        │
    │  Claude Sonnet 4.6 (analyze) / Haiku (EOD) │
-   │  Agentic loop — up to 30 tool iterations   │
+   │  Scan: up to 20 iterations (Sonnet)         │
+│  EOD:  up to 10 iterations (Haiku)          │
    │                                            │
    │  MEMORY INPUT:                             │
    │  • signal-weights.json (win rates)         │
@@ -562,7 +572,7 @@ FMP's post-August 2025 free tier only supports single-stock stable endpoints. ET
 
 ### Reddit (no API key required)
 ```
-https://www.reddit.com/r/{subreddit}/search.json?q={ticker}&sort=top&t=week&limit=5
+https://www.reddit.com/r/{subreddit}/search.json?q={ticker}&sort=top&t=day&limit=5
 ```
 Subreddits: r/wallstreetbets, r/stocks, r/investing
 
@@ -648,22 +658,20 @@ Uses `nodemailer` with Gmail SMTP (`smtp.gmail.com:587`). App password generated
 
 ## 17. Daily Automation (macOS launchd)
 
-All 9 jobs are loaded and running:
+All 7 jobs are loaded and running:
 
 ```bash
 launchctl list | grep investing-tool
-# com.investing-tool.scrape      → 5:30 AM daily
-# com.investing-tool.analyze     → 6:00 AM daily (scan mode)
-# com.investing-tool.check-8am   → 8:00 AM daily (exit manager)
-# com.investing-tool.check-930am → 9:30 AM daily (exit manager)
-# com.investing-tool.check-11am  → 11:00 AM daily (exit manager)
-# com.investing-tool.force-close → 12:45 PM daily (hard close all)
-# com.investing-tool.eod         → 1:30 PM daily
-# com.investing-tool.monitor     → 2:15 PM daily (health check)
-# com.investing-tool.kb-weekly   → 5:00 AM every Sunday
+# com.investing-tool.scrape       → 5:30 AM daily
+# com.investing-tool.analyze      → 6:00 AM daily (scan mode)
+# com.investing-tool.exit-daemon  → 6:25 AM daily (continuous monitor, exits ~1pm)
+# com.investing-tool.force-close  → 12:45 PM daily (failsafe — daemon handles primary exits)
+# com.investing-tool.eod          → 1:30 PM daily
+# com.investing-tool.monitor      → 2:15 PM daily (health check)
+# com.investing-tool.kb-weekly    → 5:00 AM every Sunday
 ```
 
-All jobs exit immediately on weekends and US market holidays (hardcoded 2026 calendar).
+All jobs perform a market-day check at startup (weekends exit immediately; holidays checked against hardcoded 2026 calendar + live Yahoo Finance QQQ status).
 
 ### Plist Files
 Located at `~/Library/LaunchAgents/`:
@@ -885,7 +893,7 @@ node robinhood-auth.js   # Authenticate Robinhood MCP
 | Config | dotenv ^16.4.5 |
 | HTTP | Node.js native `fetch` (built-in since Node 18) |
 | Email | nodemailer ^8.0.11 + Gmail SMTP |
-| Scheduling | macOS launchd (4 plist jobs) |
+| Scheduling | macOS launchd (7 jobs: scrape, scan, exit-daemon, force-close, eod, monitor, kb-weekly) |
 | Trade execution | Robinhood Agentic Trading MCP (HTTP transport) |
 
 ### Model Selection by Task

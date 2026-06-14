@@ -12,6 +12,7 @@
     "check": "node agent.js check",
     "force-close": "node agent.js force-close",
     "eod": "node agent.js eod",
+    "exit-daemon": "node exit-daemon.js",
     "monitor": "node monitor.js",
     "analyze": "node agent.js scan",
     "run": "node scraper.js && node agent.js scan"
