@@ -14,7 +14,7 @@
 4. [Web Scraping Layer](#4-web-scraping-layer)
 5. [Knowledge Base](#5-knowledge-base)
 6. [The Investing Agent (agent.js)](#6-the-investing-agent-agentjs)
-7. [Signal Stack — All 11 Signals](#7-signal-stack--all-11-signals)
+7. [Signal Stack — 10 Day-Trading Signals](#7-signal-stack--10-day-trading-signals)
 8. [Scoring System](#8-scoring-system)
 9. [Trade Execution & Rationale Logging](#9-trade-execution--rationale-logging)
 10. [Circuit Breakers & Risk Management](#10-circuit-breakers--risk-management)
@@ -134,7 +134,7 @@ DAILY  1:30 PM — agent.js eod (Claude Haiku)
    │  Agentic loop — up to 30 tool iterations   │
    │                                            │
    │  MEMORY INPUT:                             │
-   │  • signal-accuracy.json (win rates)        │
+   │  • signal-weights.json (win rates)         │
    │  • watchlist-tomorrow.json (yesterday)     │
    │  • trades-log.json (recent history)        │
    │                                            │
@@ -161,7 +161,7 @@ DAILY  1:30 PM — agent.js eod (Claude Haiku)
                           │  rationale files  │
                           │                   │
                           │  output/          │
-                          │  signal-accuracy  │
+                          │  signal-weights   │
                           │  trades-log       │
                           │  watchlist-tmrw   │
                           └───────────────────┘
@@ -275,7 +275,7 @@ Only factual, non-narrative data is pre-loaded. Sam's briefings, market outlook,
 
 | Content | Chars | Source |
 |---------|-------|--------|
-| Learning memory (signal win rates) | dynamic | signal-accuracy.json |
+| Learning memory (signal win rates) | dynamic | signal-weights.json |
 | Yesterday's watchlist + entry triggers | dynamic | watchlist-tomorrow.json |
 | Today's trade alerts (what Sam bought/sold) | up to 2,000 | Daily scrape JSON |
 | Today's watchlist (what Sam is monitoring) | up to 2,000 | Daily scrape JSON |
@@ -296,7 +296,7 @@ The agent is explicitly instructed:
 2. Discover candidate stocks from web search and signals BEFORE reading Sam's view
 3. Score candidates using 10 independent signals (Sam NOT included)
 4. THEN consult Sam: his stance adjusts position size (full/standard/small) but not score
-5. Execute if score ≥7 regardless of Sam's stance (with smaller size if Sam is silent/bearish)
+5. Execute if P(win) >0.55 — Sam's stance adjusts size (full/standard/small) but not the threshold
 
 ### Modes
 - `node agent.js` — analyze + trade (6:00am)
@@ -383,35 +383,6 @@ At EOD, coefficients from this week are compared against last week on held-out t
   }
 }
 ```
-| Analyst conviction (analyst_conviction) | 2+ upgrades or significant price target raise |
-
-### Deductions
-
-| Condition | Points |
-|-----------|--------|
-| Earnings in < 5 days | -2 |
-| RSI > 70 (overbought) | -1 |
-| Macro headwind for sector | -1 |
-| Heavy insider selling | -1 |
-| Extreme Reddit bullishness (crowded) | -1 |
-
-### Sam Weiss Modifier (position size only)
-
-| Sam Stance | Position Size |
-|-----------|---------------|
-| Bullish (explicit buy call) | Full (5% of portfolio) |
-| Silent (no mention) | Standard (3%) |
-| Bearish (avoid / has sold) | Small (2%) |
-
-### Decision Thresholds
-
-| Score | Action |
-|-------|--------|
-| ≥8 | Execute full position (Sam-adjusted) |
-| 7 | Execute standard position |
-| 5-6 | Watchlist for tomorrow |
-| < 5 | Avoid |
-
 ---
 
 ## 9. Trade Execution & Rationale Logging
@@ -428,20 +399,20 @@ Every executed trade produces two permanent records:
     "quantity": 1,
     "entryPrice": 205.19,
     "signals": {
-      "rsi_oversold": false,
+      "premarket_gap_up": true,
+      "rvol_spike": true,
+      "gap_fill_low_prob": true,
       "macro_tailwind": true,
       "sector_leading": true,
       "news_catalyst": false,
       "notable_mention": true,
       "insider_buying": false,
-      "institutional_growing": false,
-      "earnings_beater": false,
       "contrarian_social": false,
       "analyst_conviction": false
     },
-    "outcome": null,
+    "pnl": null,
     "exitPrice": null,
-    "return5d": null
+    "exitTime": null
   }]
 }
 ```
@@ -455,8 +426,8 @@ Each trade gets a dedicated markdown file documenting:
 - **Sam Weiss alignment** — his explicit stance and framework guidance
 - **Technical snapshot** — RSI, 52W position, MA50/200, volume
 - **All 10 signal verdicts** — ✅ or ❌ for each signal
-- **5-day outcome table** — filled in at EOD D+1, D+3, D+5
-- **Robinhood order result** — raw JSON confirmation
+- **ATR-14 stop/target levels** — computed at entry
+- **Robinhood order result** — raw JSON confirmation (or DRY RUN output)
 
 This creates a permanent, auditable record of every trading decision — enabling post-mortems and long-term signal calibration.
 
@@ -662,12 +633,8 @@ Robinhood MCP returns `text/event-stream` format, not JSON. The `rhPost()` funct
 **Email:** `alvintsheth@gmail.com` via nodemailer + Gmail App Password
 
 ### Report Contents
-1. **P&L Summary** — per trade: entry vs close, P&L $ and %, vs QQQ benchmark
-2. **Signal Accuracy Review** — which signals worked, win rates updated
-3. **Key Learnings** — what to do differently, signal combination insights
-4. **Tomorrow's Watchlist** — specific entry triggers, targets, stop levels for each
-5. **Open Positions Review** — thesis still valid? Add or trim?
-6. **Strategy Alignment Score** — 1-10 vs Sam's 4-part framework
+1. **P&L Summary** — per trade: entry vs force-close price, P&L $ and %, vs QQQ benchmark
+2. **Key Learnings** — which signals fired/missed, what to do differently tomorrow
 
 ### Gmail Configuration
 ```
