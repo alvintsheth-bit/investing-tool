@@ -45,7 +45,7 @@ A fully automated personal **day-trading** agent that runs a complete intraday c
 - **Monitors** open positions continuously via exit-daemon (45-second poll loop, 6:25am–1pm PT) — exits on stop/target hits or thesis-break events (Haiku judges borderline cases)
 - **Force-closes** all open positions at 12:45pm PT (failsafe only — daemon handles primary exits; early-close days: 9:45am)
 - **Trains** a logistic regression model at EOD on all closed trades (features: 10 signal binaries + continuous values, L2 regularized, 80/20 blended with prior day's weights)
-- **Reports** daily realized P&L vs QQQ benchmark + learnings — emailed at 1:30pm PT
+- **Reports** daily realized P&L vs SPY/QQQ/IWM benchmarks + learnings — emailed at 1:30pm PT; weekly P&L summary emailed Sundays 5:30pm PT
 - **DRY_RUN mode** (default `true`) logs all intended orders without submitting — set `DRY_RUN=false` in `.env` to go live
 
 The reasoning engine is Claude Sonnet 4.6 (scan) and Claude Haiku 4.5 (EOD + judgment calls), running in agentic loops (up to 20 and 10 iterations respectively).
@@ -123,7 +123,7 @@ DAILY  2:15 PM — monitor.js (health check — no Claude, no cost)
 ```
 ┌─────────────────────────────────────────────────────────────────────┐
 │                          macOS launchd (7 jobs)                      │
-│  Sun 5am: kb-weekly  |  5:30am: scrape  |  6am: scan  |  6:25am: exit-daemon  |  12:45pm: force-close  |  1:30pm: eod  |  2:15pm: monitor│
+│  Sun 5am: kb-weekly  |  5:30am: scrape  |  6am: scan  |  6:25am: exit-daemon  |  12:45pm: force-close  |  1:30pm: eod  |  2:15pm: monitor  |  Sun 5:30pm: weekly-report│
 └──────────────┬──────────────────────────────────────────────────────┘
                │
    ┌───────────▼────────────┐
@@ -692,8 +692,10 @@ Robinhood MCP returns `text/event-stream` format, not JSON. The `rhPost()` funct
 **Email:** `alvintsheth@gmail.com` via nodemailer + Gmail App Password
 
 ### Report Contents
-1. **P&L Summary** — per trade: entry vs exit price, P&L $ and %, vs QQQ benchmark
+1. **P&L Summary** — per trade: entry vs exit price, P&L $ and %, vs SPY/QQQ/IWM same-day benchmarks
 2. **Key Learnings** — which signals fired/missed, what to do differently tomorrow
+
+Benchmark returns (SPY, QQQ, IWM daily % change) are fetched from Yahoo Finance at runtime and appear in both the email subject line and the report body so you can immediately see whether you beat the market that day.
 
 ### Expectancy Metrics (`expectancy-log.json`)
 Each EOD run appends: win rate, avg win $, avg loss $, expectancy ($/trade), profit factor. Tracked over time to detect model drift.
@@ -707,22 +709,65 @@ Uses `nodemailer` with Gmail SMTP (`smtp.gmail.com:587`). App password generated
 
 ---
 
+## 16b. Weekly P&L Report (`weekly-report.js`)
+
+**Schedule:** Sundays 5:30pm PT via launchd
+**File:** `weekly-report.js`
+**Cost:** $0 — pure code, no Claude API calls
+**Output:** Email to `alvintsheth@gmail.com`; logs to `output/logs/weekly-report.log`
+
+Runs every Sunday evening and summarizes the Mon–Fri week just completed.
+
+### Report Sections
+
+1. **Performance vs Benchmarks**
+   - Agent total P&L $ and % of capital
+   - SPY (broad market), QQQ (Nasdaq-100/tech peers), IWM (Russell 2000 / small-cap momentum)
+   - Alpha vs each benchmark (agent % − benchmark %)
+   - Dollar equivalent: "buy-and-hold SPY with the same capital would have made $X"
+
+2. **Trade Statistics**
+   - Total trades, W/L split, win rate, avg win, avg loss, expectancy $/trade, profit factor
+
+3. **Signal Performance** — for each of the 10 signals: how many trades fired it, win rate
+
+4. **Setup Score Bands** — 0.55–0.65, 0.65–0.75, 0.75+: trade count, win rate, total P&L per band
+
+### Data Sources
+- `output/trades-log.json` — closed trades for the week (filtered by date range Mon–Fri)
+- `output/expectancy-log.json` — daily expectancy metrics
+- `output/sod-balance.json` — capital base for % return calculation
+- Yahoo Finance (v8 chart API, no key required) — SPY, QQQ, IWM weekly returns
+
+### To Activate Plist
+```bash
+launchctl load ~/Library/LaunchAgents/com.investing-tool.weekly-report.plist
+```
+
+### To Run Manually
+```bash
+npm run weekly-report
+```
+
+---
+
 ## 17. Daily Automation (macOS launchd)
 
-All 7 jobs are loaded and running:
+All 8 jobs are loaded and running:
 
 ```bash
 launchctl list | grep investing-tool
-# com.investing-tool.scrape       → 5:30 AM daily
-# com.investing-tool.analyze      → 6:00 AM daily (scan mode)
-# com.investing-tool.exit-daemon  → 6:25 AM daily (continuous monitor, exits ~1pm)
-# com.investing-tool.force-close  → 12:45 PM daily (failsafe — daemon handles primary exits)
-# com.investing-tool.eod          → 1:30 PM daily
-# com.investing-tool.monitor      → 2:15 PM daily (health check)
-# com.investing-tool.kb-weekly    → 5:00 AM every Sunday
+# com.investing-tool.scrape         → 5:30 AM daily
+# com.investing-tool.analyze        → 6:00 AM daily (scan mode)
+# com.investing-tool.exit-daemon    → 6:25 AM daily (continuous monitor, exits ~1pm)
+# com.investing-tool.force-close    → 12:45 PM daily (failsafe — daemon handles primary exits)
+# com.investing-tool.eod            → 1:30 PM daily
+# com.investing-tool.monitor        → 2:15 PM daily (health check)
+# com.investing-tool.kb-weekly      → 5:00 AM every Sunday
+# com.investing-tool.weekly-report  → 5:30 PM every Sunday
 ```
 
-All jobs perform a market-day check at startup (weekends exit immediately; holidays checked against hardcoded 2026 calendar + live Yahoo Finance QQQ status).
+All jobs except `weekly-report` perform a market-day check at startup (weekends exit immediately; holidays checked against hardcoded 2026 calendar + live Yahoo Finance QQQ status).
 
 ### Plist Files
 Located at `~/Library/LaunchAgents/`:
@@ -733,6 +778,7 @@ Located at `~/Library/LaunchAgents/`:
 - `com.investing-tool.eod.plist`
 - `com.investing-tool.monitor.plist`
 - `com.investing-tool.kb-weekly.plist`
+- `com.investing-tool.weekly-report.plist` (runs `weekly-report.js` — Sunday 5:30pm PT)
 
 ### Log Files
 `output/logs/`:
@@ -743,6 +789,7 @@ Located at `~/Library/LaunchAgents/`:
 - `eod.log` — 1:30pm EOD report output
 - `monitor.log` — 2:15pm health check output
 - `kb-weekly.log` — Sunday KB update output
+- `weekly-report.log` — Sunday 5:30pm weekly P&L summary output
 
 ### To manually trigger any job
 ```bash

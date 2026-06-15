@@ -1517,10 +1517,14 @@ ${nasdaqRef}`;
 }
 
 // ─── EOD Prompt ───────────────────────────────────────────────────────────────
-function buildEODPrompt(closedTrades, openPositions) {
-  const qqqYahoo = null; // fetched at runtime
+function buildEODPrompt(closedTrades, openPositions, benchmarks = {}) {
+  const fmtBench = (q) => q ? `${q.changePercent >= 0 ? '+' : ''}${q.changePercent?.toFixed(2)}%` : 'n/a';
+  const benchLine = `SPY ${fmtBench(benchmarks.spy)} | QQQ ${fmtBench(benchmarks.qqq)} | IWM ${fmtBench(benchmarks.iwm)}`;
 
   return `You are generating the EOD report for Alvin's day-trading account. Today is ${today}.
+
+## Market Benchmarks (today's close)
+${benchLine}
 
 ## Closed Trades Today
 ${closedTrades.length ? closedTrades.map(t =>
@@ -1531,15 +1535,15 @@ ${closedTrades.length ? closedTrades.map(t =>
 ${openPositions.length ? openPositions.map(p => `${p.ticker}: entry $${p.entryPrice}, stop $${p.stopPrice}, target $${p.targetPrice}`).join('\n') : '(none)'}
 
 ## Tools Available
-- get_fear_greed_vix → get today's final market close data for QQQ benchmark
+- get_fear_greed_vix → get today's fear/greed and VIX data
 - get_market_data [ticker] → get closing price for any open position
 - save_tomorrow_watchlist → save tomorrow's gap candidates
 
 ## EOD Report Format (two sections only):
 
 ### Section 1: P&L
-Per-trade breakdown vs QQQ's same-day return (6:30am–1pm PT equivalent).
-Total realized P&L. Win/loss count. Best and worst trade.
+Per-trade breakdown. Total realized P&L vs SPY/QQQ/IWM same-day moves (benchmarks given above).
+Win/loss count. Best and worst trade.
 
 ### Section 2: Learnings
 What worked, what didn't. Which signals were present on winning vs losing trades.
@@ -1549,7 +1553,7 @@ Keep it concise — max 500 words total. Details live in log files.`;
 }
 
 // ─── Email ────────────────────────────────────────────────────────────────────
-async function sendEODEmail(reportText, closedTrades) {
+async function sendEODEmail(reportText, closedTrades, benchmarks = {}) {
   const user = process.env.GMAIL_USER;
   const pass = process.env.GMAIL_APP_PASSWORD;
   if (!user || !pass) { console.log('  ⚠️  Email skipped — GMAIL_USER/GMAIL_APP_PASSWORD not set'); return; }
@@ -1557,11 +1561,15 @@ async function sendEODEmail(reportText, closedTrades) {
   const totalPnl   = closedTrades.reduce((s, t) => s + (t.pnl || 0), 0);
   const pnlStr     = totalPnl >= 0 ? `+$${totalPnl.toFixed(2)}` : `-$${Math.abs(totalPnl).toFixed(2)}`;
   const wins       = closedTrades.filter(t => t.pnl > 0).length;
-  const subject    = `📈 EOD ${today} | ${pnlStr} | ${wins}W/${closedTrades.length - wins}L`;
+
+  const fmtB = q => q?.changePercent != null ? `${q.changePercent >= 0 ? '+' : ''}${q.changePercent.toFixed(2)}%` : 'n/a';
+  const benchStr = `SPY ${fmtB(benchmarks.spy)} | QQQ ${fmtB(benchmarks.qqq)} | IWM ${fmtB(benchmarks.iwm)}`;
+  const subject  = `📈 EOD ${today} | ${pnlStr} | ${wins}W/${closedTrades.length - wins}L | ${benchStr}`;
 
   const html = `<html><body style="font-family:monospace;max-width:800px;margin:auto;padding:24px;">
 <h2>📈 Day Trade EOD — ${today}</h2>
 <p><strong>${pnlStr}</strong> | ${wins}W / ${closedTrades.length - wins}L | ${DRY_RUN ? '🔷 DRY RUN' : '🚨 LIVE'}</p>
+<p style="color:#555;font-size:13px;">Market: ${benchStr}</p>
 <pre style="white-space:pre-wrap;line-height:1.5;">${reportText.replace(/</g, '&lt;').replace(/>/g, '&gt;')}</pre>
 </body></html>`;
 
@@ -1813,9 +1821,16 @@ async function runEOD() {
     console.log(`  ℹ️  Not enough data to train model (${allComplete.length}/${60} trades) — using equal-weight fallback`);
   }
 
+  // Fetch benchmark returns (pure code — no Claude tokens)
+  console.log('  [EOD] Fetching benchmarks (SPY, QQQ, IWM)...');
+  const [spyQ, qqqQ, iwmQ] = await yahooQuotesBatch(['SPY', 'QQQ', 'IWM']);
+  const benchmarks = { spy: spyQ, qqq: qqqQ, iwm: iwmQ };
+  const fmtB = q => q?.changePercent != null ? `${q.changePercent >= 0 ? '+' : ''}${q.changePercent.toFixed(2)}%` : 'n/a';
+  console.log(`  [EOD] Benchmarks — SPY ${fmtB(spyQ)} | QQQ ${fmtB(qqqQ)} | IWM ${fmtB(iwmQ)}`);
+
   // Claude Haiku generates EOD report
   const eodTools  = tools.filter(t => ['get_fear_greed_vix', 'get_market_data', 'save_tomorrow_watchlist'].includes(t.name));
-  const messages  = [{ role: 'user', content: buildEODPrompt(closedToday, openData.positions) }];
+  const messages  = [{ role: 'user', content: buildEODPrompt(closedToday, openData.positions, benchmarks) }];
   let response;
   let iterations  = 0;
   let inputTokens = 0, outputTokens = 0;
@@ -1891,7 +1906,7 @@ async function runEOD() {
     } catch (e) { console.warn(`  ⚠️  Could not update rejected candidates: ${e.message}`); }
   }
 
-  await sendEODEmail(reportText, closedToday);
+  await sendEODEmail(reportText, closedToday, benchmarks);
 }
 
 // ─── Main ─────────────────────────────────────────────────────────────────────

@@ -15,6 +15,7 @@
     "exit-daemon": "node exit-daemon.js",
     "monitor": "node monitor.js",
     "analyze": "node agent.js scan",
+    "weekly-report": "node weekly-report.js",
     "run": "node scraper.js && node agent.js scan"
   },
   "dependencies": {
