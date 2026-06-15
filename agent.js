@@ -488,20 +488,26 @@ async function rhMCP(toolName, args = {}) {
 async function isMarketDay() {
   if (dayOfWeek === 0 || dayOfWeek === 6) return false;
   if (US_MARKET_HOLIDAYS_2026.has(today)) return false;
+  // Calendar says it's a trading day. Use Yahoo only to detect unexpected closures.
+  // Use range=5d so historical bars are always available regardless of time-of-day.
+  // Fail OPEN on calendar trading days (undefined marketState at 6am pre-market is normal).
   try {
-    const result = await yahooChart('QQQ', '1d', '1d');
+    const result = await yahooChart('QQQ', '5d', '1d');
     if (!result) {
-      console.warn('[market-check] Yahoo Finance unavailable — failing closed');
-      return false;
+      console.warn('[market-check] Yahoo Finance unavailable — assuming market open (calendar trading day)');
+      return true;
     }
     const state = result.meta?.marketState;
-    // PRE = pre-market session (6am PT scan runs here), REGULAR = open, PREPRE = extended pre
-    const isOpen = state === 'PRE' || state === 'REGULAR' || state === 'PREPRE';
-    if (!isOpen) console.warn(`[market-check] QQQ marketState="${state}" — treating as non-trading day`);
-    return isOpen;
+    if (state === 'CLOSED') {
+      console.warn('[market-check] QQQ marketState="CLOSED" — unexpected closure on weekday');
+      return false;
+    }
+    if (state) console.log(`[market-check] QQQ marketState="${state}"`);
+    else console.warn('[market-check] QQQ marketState undefined at pre-market — proceeding (calendar trading day)');
+    return true;
   } catch (e) {
-    console.warn(`[market-check] Failed: ${e.message} — failing closed`);
-    return false;
+    console.warn(`[market-check] Failed: ${e.message} — assuming market open (calendar trading day)`);
+    return true;
   }
 }
 
