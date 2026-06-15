@@ -21,13 +21,17 @@ mkdirSync(join(OUTPUT_DIR, 'trades'), { recursive: true });
 const MODE = process.argv[2] || 'scan'; // scan | check | force-close | eod
 
 // ─── Market Calendar ──────────────────────────────────────────────────────────
-const US_MARKET_HOLIDAYS_2026 = new Set([
+const US_MARKET_HOLIDAYS = new Set([
+  // 2026
   '2026-01-01', '2026-01-19', '2026-02-16', '2026-04-03',
   '2026-05-25', '2026-07-03', '2026-09-07', '2026-11-26', '2026-12-25',
+  // 2027
+  '2027-01-01', '2027-01-18', '2027-02-15', '2027-04-02',
+  '2027-05-31', '2027-07-05', '2027-09-06', '2027-11-25', '2027-12-24',
 ]);
 
 // Early-close days: market closes at 1pm ET / 10am PT
-const EARLY_CLOSE_DATES = new Set(['2026-11-27', '2026-12-24']);
+const EARLY_CLOSE_DATES = new Set(['2026-11-27', '2026-12-24', '2027-11-26']);
 
 function getDateStr(daysFromNow = 0) {
   const d = new Date();
@@ -35,8 +39,14 @@ function getDateStr(daysFromNow = 0) {
   return d.toISOString().split('T')[0];
 }
 
-const today     = getDateStr(0);
-const dayOfWeek = new Date().getDay();
+// PT-aware date/day — avoids UTC vs local ambiguity in launchd environments
+function getPTDateParts() {
+  const ptStr = new Intl.DateTimeFormat('en-CA', { timeZone: 'America/Los_Angeles' }).format(new Date());
+  const d = new Date(ptStr + 'T12:00:00'); // noon to avoid DST edge
+  return { dateStr: ptStr, dow: d.getDay() };
+}
+
+const { dateStr: today, dow: dayOfWeek } = getPTDateParts();
 
 // ─── Pilot Mode Config (item 20) ─────────────────────────────────────────────
 // PILOT_MODE=true: 1 position, 10% sizing, ~0.25% max loss per trade
@@ -485,28 +495,34 @@ async function rhMCP(toolName, args = {}) {
 }
 
 // Item 23: live market-day check via Yahoo Finance — fail closed if unavailable
-async function isMarketDay() {
+// Calendar-only check — no network, safe to use for safety-critical operations
+function calendarTradingDay() {
   if (dayOfWeek === 0 || dayOfWeek === 6) return false;
-  if (US_MARKET_HOLIDAYS_2026.has(today)) return false;
-  // Calendar says it's a trading day. Use Yahoo only to detect unexpected closures.
-  // Use range=5d so historical bars are always available regardless of time-of-day.
-  // Fail OPEN on calendar trading days (undefined marketState at 6am pre-market is normal).
+  if (US_MARKET_HOLIDAYS.has(today)) return false;
+  return true;
+}
+
+// Yahoo-enhanced check — use for scan only (non-safety-critical, pre-market timing)
+async function isMarketDay() {
+  if (!calendarTradingDay()) return false;
+  // Calendar says trading day. Use Yahoo only to catch unexpected emergency closures.
+  // Fail OPEN — undefined/network errors are not grounds to skip a calendar trading day.
   try {
     const result = await yahooChart('QQQ', '5d', '1d');
     if (!result) {
-      console.warn('[market-check] Yahoo Finance unavailable — assuming market open (calendar trading day)');
+      console.warn('[market-check] Yahoo Finance unavailable — proceeding (calendar trading day)');
       return true;
     }
     const state = result.meta?.marketState;
     if (state === 'CLOSED') {
-      console.warn('[market-check] QQQ marketState="CLOSED" — unexpected closure on weekday');
+      console.warn('[market-check] QQQ marketState="CLOSED" on weekday — emergency closure?');
       return false;
     }
     if (state) console.log(`[market-check] QQQ marketState="${state}"`);
-    else console.warn('[market-check] QQQ marketState undefined at pre-market — proceeding (calendar trading day)');
+    else console.warn('[market-check] QQQ marketState undefined — proceeding (calendar trading day)');
     return true;
   } catch (e) {
-    console.warn(`[market-check] Failed: ${e.message} — assuming market open (calendar trading day)`);
+    console.warn(`[market-check] Yahoo error: ${e.message} — proceeding (calendar trading day)`);
     return true;
   }
 }
@@ -1930,8 +1946,10 @@ async function main() {
     return;
   }
 
-  // Item 23: live market-day check — fail closed if Yahoo Finance unavailable
-  const trading = await isMarketDay();
+  // scan uses Yahoo-backed check (can fail open on calendar trading days)
+  // force-close, check, eod use calendar-only check — never blocked by API issues
+  const isScan = MODE === 'scan';
+  const trading = isScan ? await isMarketDay() : calendarTradingDay();
   if (!trading) {
     console.log(`[${MODE}] Not a trading day (${today}) — skipping.`);
     process.exit(0);

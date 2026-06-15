@@ -10,19 +10,21 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const OUTPUT_DIR = join(__dirname, 'output');
 
 // ─── Market Calendar (mirrors agent.js) ──────────────────────────────────────
-const US_MARKET_HOLIDAYS_2026 = new Set([
+const US_MARKET_HOLIDAYS = new Set([
+  // 2026
   '2026-01-01', '2026-01-19', '2026-02-16', '2026-04-03',
   '2026-05-25', '2026-07-03', '2026-09-07', '2026-11-26', '2026-12-25',
+  // 2027
+  '2027-01-01', '2027-01-18', '2027-02-15', '2027-04-02',
+  '2027-05-31', '2027-07-05', '2027-09-06', '2027-11-25', '2027-12-24',
 ]);
 
-function getDateStr() {
-  return new Date().toISOString().split('T')[0];
-}
+// PT-aware date/day — avoids UTC vs local ambiguity in launchd environments
+const today     = new Intl.DateTimeFormat('en-CA', { timeZone: 'America/Los_Angeles' }).format(new Date());
+const _ptDow    = new Date(today + 'T12:00:00');
+const dayOfWeek = _ptDow.getDay();
 
-const today     = getDateStr();
-const dayOfWeek = new Date().getDay();
-
-if (dayOfWeek === 0 || dayOfWeek === 6 || US_MARKET_HOLIDAYS_2026.has(today)) {
+if (dayOfWeek === 0 || dayOfWeek === 6 || US_MARKET_HOLIDAYS.has(today)) {
   console.log(`[monitor] Market closed today (${today}) — skipping.`);
   process.exit(0);
 }
@@ -115,13 +117,19 @@ async function main() {
     results.push(`❌ Positions    ${openCount} still open: ${tickers}`);
   }
 
-  // 5. Exit-daemon log touched today (evidence it ran)
+  // 5. Exit-daemon: verify it STARTED (~6:25am) AND ran through end of session (~12:30pm+)
+  // A log touched only at 6:25am but not again means the daemon crashed before the session ended.
   const daemonLog = join(OUTPUT_DIR, 'logs', 'exit-daemon.log');
-  if (fileTouchedAfter(daemonLog, 6.4)) {
-    results.push('✅ Exit-daemon  log updated today (started ~6:25am)');
-  } else {
+  const daemonStarted = fileTouchedAfter(daemonLog, 6.4);
+  const daemonRanFull = fileTouchedAfter(daemonLog, 12.5); // still polling at 12:30pm
+  if (!daemonStarted) {
     failures.push('❌ Exit-daemon  exit-daemon.log NOT updated today — daemon may not have fired');
-    results.push('❌ Exit-daemon  log not updated today');
+    results.push('❌ Exit-daemon  did not start today');
+  } else if (!daemonRanFull) {
+    failures.push('❌ Exit-daemon  log last updated before 12:30pm — daemon may have crashed mid-session; positions may have been unmonitored');
+    results.push('❌ Exit-daemon  started but may have crashed mid-session');
+  } else {
+    results.push('✅ Exit-daemon  started ~6:25am and ran through end of session');
   }
 
   // 6. Force-close log touched after 12:45pm (failsafe ran)
