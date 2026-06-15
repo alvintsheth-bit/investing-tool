@@ -1049,5 +1049,45 @@ The agent uses **Claude Sonnet 4.6** (analyze) and **Claude Haiku 4.5** (EOD) �
 
 **Why this is also architecturally better:** Briefings in the initial context = the agent has absorbed Sam's current narrative before its first thought. That's not independent research — it's anchored research. Tool-gating Sam's content enforces the "market first, Sam second" discipline at a structural level, not just as a prompt instruction.
 
+---
+
+## 25. Improvement Backlog (stacked by priority)
+
+Items are stacked: P1 = do now, P2 = after first 20 live trades, P3 = after first profitable month, P4 = if/when scaling.
+
+### P1 — Reliability / Safety (do in next 2 weeks)
+
+| # | Item | Why |
+|---|------|-----|
+| 1 | **Broker state reconciliation at startup** | If agent.js crashes between ORDER_SUBMITTED and FILLED, `trades-open.json` can show a phantom position. On next run, compare local state to Robinhood portfolio and alert/resolve divergence. |
+| 2 | **Remove dead `runCheck()` function** | 100 lines of dead code in agent.js — no plist calls it, exit-daemon replaced it. Confuses future debugging. Low risk to remove. |
+| 3 | **Fix `runCheck()` UTC/PT timezone bug (before re-enabling)** | If check mode is ever re-enabled, line 1660 computes PT time from UTC with a hardcoded offset that's wrong in winter (PST vs PDT). Use `Intl.DateTimeFormat` like the rest of the codebase. |
+
+### P2 — Operations (after 20 live trades)
+
+| # | Item | Why |
+|---|------|-----|
+| 4 | **Live market calendar from Polygon API** | Hardcoded holidays through 2027 require manual update. Polygon free tier has a market status/upcoming holidays endpoint. Fetch weekly, cache to `output/market-calendar.json`, fall back to hardcoded list if fetch fails. |
+| 5 | **Scan no-output alert** | If scan runs but Claude produces no trade and no recommendations file (tool_use loop exhausted), monitor doesn't distinguish "correct no-trade day" from "agent confused and produced nothing." |
+| 6 | **Deduplicate `TRADE_STATES`** | Defined in agent.js AND exit-daemon.js. Adding a state requires two edits. Extract to a shared constant or write exit-daemon to import from agent.js. |
+| 7 | **Deduplicate `transitionState` / `addStateHistory`** | Same function, different name, one in each file. Same problem as above. |
+
+### P3 — Tech Debt / Refactor (after first profitable month)
+
+| # | Item | Why |
+|---|------|-----|
+| 8 | **Split agent.js (1966 lines) into modules** | Current file handles: scan prompts, EOD prompts, tool definitions, tool execution, Yahoo/FMP fetching, Robinhood orders, logistic regression, email, circuit breaker, state machine. Each "item" was bolted on rather than placed in the right module. Split into `lib/broker.js`, `lib/market-data.js`, `lib/positions.js`, mode files. |
+| 9 | **Deduplicate market calendar** | Still 3 copies of the holiday set across agent.js, exit-daemon.js, monitor.js. A shared `lib/calendar.js` eliminates the update problem. |
+| 10 | **Add 2028 market holidays** | 2027 holidays added; 2028 NYSE calendar typically confirmed by Oct 2027. |
+
+### P4 — Nice-to-Have (if/when scaling capital)
+
+| # | Item | Why |
+|---|------|-----|
+| 11 | **Slippage threshold auto-calibration (Item 36)** | Currently hardcoded 2% entry slippage alert. Should auto-calibrate from the actual fill vs decision price spread observed over 20+ live trades. |
+| 12 | **SMS/push as secondary alert channel** | Gmail is the single alerting channel. If credentials expire or Gmail throttles, alerts are silent. Twilio SMS or Apple push as fallback. |
+| 13 | **Monthly/quarterly/annual P&L report** | weekly-report.js is built; monthly/quarterly/annual deferred until there's enough data (need 3+ months). |
+| 14 | **Sierra-style observability patterns** | Structured event emission, tiered health check severity (critical vs warning vs info), human escalation protocol. Only relevant if scaling to larger capital or multiple strategies. |
+
 *Last updated: June 2026*
 *Built by Alvin Tsheth using Claude Code*
