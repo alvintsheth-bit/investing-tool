@@ -1438,9 +1438,6 @@ async function preflightChecks() {
 
 // ─── Scan Prompt ──────────────────────────────────────────────────────────────
 function buildScanPrompt(balance, openPositions, weights) {
-  const dailyScrape   = loadDailyScrape();
-  const todayTrades   = dailyScrape?.pages?.find(p => p.label === 'trades')?.content || '';
-  const todayWatchlist = dailyScrape?.pages?.find(p => p.label === 'trade-watch')?.content || loadKBFile('trade-watchlist.md', 1500);
   const nasdaqRef     = loadKBFile('nasdaq-historical.md', 2000);
   const positionSize  = balance ? `$${computePositionDollars(balance)}` : '17.5% of balance';
 
@@ -1522,16 +1519,6 @@ Phase 5 — Execute:
   save_tomorrow_watchlist → tickers scoring 0.45–0.55
 
 ═══════════════════════════════════════════════════════════════
-SAM'S ACTIONS TODAY
-═══════════════════════════════════════════════════════════════
-
-### TRADE ALERTS (what Sam executed)
-${todayTrades.slice(0, 1500) || '(none scraped)'}
-
-### WATCHLIST (what Sam is monitoring)
-${todayWatchlist.slice(0, 1000) || '(none scraped)'}
-
-═══════════════════════════════════════════════════════════════
 NASDAQ CORRECTION/RALLY REFERENCE
 ═══════════════════════════════════════════════════════════════
 
@@ -1600,6 +1587,21 @@ async function sendEODEmail(reportText, closedTrades, benchmarks = {}) {
   console.log(`  📧 EOD email sent → alvintsheth@gmail.com`);
 }
 
+// ─── API retry helper (5xx / overloaded) ─────────────────────────────────────
+async function callWithRetry(fn, { retries = 3, baseDelay = 5000 } = {}) {
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    try {
+      return await fn();
+    } catch (err) {
+      const retryable = err.status === 500 || err.status === 529;
+      if (!retryable || attempt === retries) throw err;
+      const delay = baseDelay * Math.pow(3, attempt);
+      console.log(`  ⚠️  API ${err.status} — retrying in ${delay / 1000}s (attempt ${attempt + 1}/${retries})...`);
+      await new Promise(r => setTimeout(r, delay));
+    }
+  }
+}
+
 // ─── Scan Mode (6am PT — Claude Sonnet) ──────────────────────────────────────
 async function runScan() {
   console.log(`\n🚀 Day trade scan starting — ${today}${DRY_RUN ? ' [DRY RUN]' : ' [LIVE]'}\n`);
@@ -1619,9 +1621,9 @@ async function runScan() {
 
   while (iterations < 20) {
     iterations++;
-    response = await client.messages.create({
+    response = await callWithRetry(() => client.messages.create({
       model: 'claude-sonnet-4-6', max_tokens: 8192, tools, messages,
-    });
+    }));
     inputTokens  += response.usage?.input_tokens  || 0;
     outputTokens += response.usage?.output_tokens || 0;
     console.log(`[Iter ${iterations}] stop: ${response.stop_reason}, blocks: ${response.content.length}`);
@@ -1698,14 +1700,14 @@ async function runCheck() {
       if (vixSpike || newsHeadlines.toLowerCase().includes('halt') || newsHeadlines.toLowerCase().includes('investigation')) {
         // Ask Haiku for judgment
         console.log(`  [${pos.ticker}] Thesis-break indicators detected — asking Haiku`);
-        const judgment = await client.messages.create({
+        const judgment = await callWithRetry(() => client.messages.create({
           model: 'claude-haiku-4-5-20251001',
           max_tokens: 200,
           messages: [{
             role: 'user',
             content: `Open position: ${pos.ticker} bought at $${pos.entryPrice}. Original thesis: ${pos.rationale?.slice(0, 200)}. Stop: $${pos.stopPrice}. Current price: $${currentPrice}. Recent news: "${newsHeadlines}". VIX change: ${vixChange}%. Should we exit NOW or hold to stop? Answer: "exit" or "hold" — one sentence reason.`,
           }],
-        });
+        }));
         inputTokens  += judgment.usage?.input_tokens  || 0;
         outputTokens += judgment.usage?.output_tokens || 0;
         const verdict = judgment.content[0]?.text?.toLowerCase() || '';
@@ -1859,9 +1861,9 @@ async function runEOD() {
 
   while (iterations < 10) {
     iterations++;
-    response = await client.messages.create({
+    response = await callWithRetry(() => client.messages.create({
       model: 'claude-haiku-4-5-20251001', max_tokens: 4000, tools: eodTools, messages,
-    });
+    }));
     inputTokens  += response.usage?.input_tokens  || 0;
     outputTokens += response.usage?.output_tokens || 0;
     console.log(`  [EOD iter ${iterations}] stop: ${response.stop_reason}`);

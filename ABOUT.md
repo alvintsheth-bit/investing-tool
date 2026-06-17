@@ -282,14 +282,12 @@ Scraped the entire site on first run. Handles complex interactive pages:
 
 ### Context Injected at Prompt Time
 
-Only factual, non-narrative data is pre-loaded. Sam's briefings, market outlook, and portfolio positions are deliberately excluded from the initial context to prevent recency bias — the agent cannot have absorbed Sam's current views before starting its own research.
+Only factual, non-narrative data is pre-loaded. All Sam content is deliberately excluded from the initial context — the agent cannot have absorbed any of Sam's current views before starting its own research.
 
 | Content | Chars | Source |
 |---------|-------|--------|
 | Learning memory (signal win rates) | dynamic | signal-weights.json |
 | Yesterday's watchlist + entry triggers | dynamic | watchlist-tomorrow.json |
-| Today's trade alerts (what Sam bought/sold) | up to 2,000 | Daily scrape JSON |
-| Today's watchlist (what Sam is monitoring) | up to 2,000 | Daily scrape JSON |
 | NASDAQ correction/rally patterns | 3,000 | nasdaq-historical.md (historical data) |
 
 **What is NOT pre-loaded (to prevent anchoring):**
@@ -298,8 +296,20 @@ Only factual, non-narrative data is pre-loaded. Sam's briefings, market outlook,
 - Market outlook → available via `get_sam_market_outlook` tool on demand
 - Portfolio positions → available via `get_sam_market_outlook` tool on demand
 - Strategy/investing-basics → available via `get_sam_market_outlook` tool on demand
+- Today's trade alerts (what Sam bought/sold) → not pre-loaded; agent discovers candidates independently first
+- Today's watchlist (what Sam is monitoring) → not pre-loaded; prevents Sam's picks from anchoring tomorrow's watchlist
 
-The only Sam content pre-loaded is **factual actions** (trade alerts = what he bought/sold, watchlist = what he's monitoring). Narrative analysis and price-level commentary are tool-gated.
+Sam's data enters only via explicit tool calls in Phase 4, after the agent has independently scored each candidate. This ensures tomorrow's watchlist is driven by gap/RVOL/sector signals — not by what Sam is watching.
+
+### API Resilience — 5xx Retry
+
+All `client.messages.create` calls (scan loop, Haiku check judgment, EOD loop) are wrapped in `callWithRetry()`:
+- Retries up to 3 times on HTTP 500 (Internal Server Error) or 529 (Overloaded)
+- Exponential backoff: 5s → 15s → 45s
+- Non-retryable errors (4xx, auth failures) are thrown immediately
+- Logged to console: `⚠️  API 500 — retrying in 5s (attempt 1/3)...`
+
+This prevents the scan from failing mid-run due to transient Anthropic server errors.
 
 ### Research Philosophy (Embedded in Prompt)
 The agent is explicitly instructed:
@@ -1037,9 +1047,9 @@ The agent uses **Claude Sonnet 4.6** (analyze) and **Claude Haiku 4.5** (EOD) �
 ### Why Each Run Is Expensive
 
 **Current architecture (optimized):**
-- Initial prompt: ~8,000 chars (trade alerts + watchlist + NASDAQ patterns + learning memory)
-- No briefings, no outlook, no portfolio positions pre-loaded — all tool-gated
-- Sam's content only enters context when the agent explicitly calls `get_sam_market_outlook` or `search_sam_weiss_briefings`
+- Initial prompt: ~5,000 chars (NASDAQ patterns + learning memory only — no Sam content pre-loaded)
+- No briefings, no outlook, no portfolio positions, no trade alerts, no watchlist pre-loaded — all tool-gated
+- Sam's content only enters context when the agent explicitly calls `get_sam_market_outlook` or `search_sam_weiss_briefings` in Phase 4
 
 **Cost estimate per session (current):**
 - Analyze run (Sonnet, 20 iter max): ~30k tokens → ~$0.45
