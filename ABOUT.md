@@ -14,6 +14,7 @@
 4. [Web Scraping Layer](#4-web-scraping-layer)
 5. [Knowledge Base](#5-knowledge-base)
 6. [The Investing Agent (agent.js)](#6-the-investing-agent-agentjs)
+6b. [Full Decision Tree — If/Then/Else](#6b-full-decision-tree--ifthenelse)
 7. [Signal Stack — 10 Day-Trading Signals](#7-signal-stack--10-day-trading-signals)
 8. [Scoring System](#8-scoring-system)
 9. [Trade Execution & Rationale Logging](#9-trade-execution--rationale-logging)
@@ -322,6 +323,264 @@ The agent is explicitly instructed:
 ### Modes
 - `node agent.js` — analyze + trade (6:00am)
 - `node agent.js eod` — end-of-day report (1:30pm)
+
+---
+
+## 6b. Full Decision Tree — If/Then/Else
+
+Every scan session follows this exact branching logic, derived from the code.
+
+---
+
+### STEP 0 — Market Day Gate (before any Claude call)
+
+```
+isMarketDay()?
+├── NO  (weekend, holiday, or QQQ shows market closed)
+│   └── EXIT silently — no scan, no email, no cost
+└── YES → continue to pre-flight
+```
+
+---
+
+### STEP 1 — Pre-Flight Checks
+
+```
+Can reach Robinhood MCP?
+├── NO  → research-only mode (balance = $0, trade execution disabled)
+└── YES → read portfolio equity + buying power
+          ├── balance = $0 or unreadable → research-only mode
+          └── balance readable
+              ├── Save SOD balance (once per day, used as circuit breaker baseline)
+              └── Reconcile trades-open.json vs Robinhood positions
+                  ├── MISMATCH → send alert email + process.exit(1) — SCAN ABORTED
+                  └── OK → continue
+
+Early-close day (hardcoded 2026 calendar)?
+├── YES → note it (daemon closes at 9:45am; force-close at 9:45am)
+└── NO  → standard close (12:45pm)
+```
+
+---
+
+### STEP 2 — Phase 1: Market Context (called once, sets session risk appetite)
+
+```
+get_fear_greed_vix()   → F&G score + VIX level → high VIX = tighten stops
+get_sector_rotation()  → which sector ETFs are moving pre-market
+get_earnings_calendar() → hard exclude list for today
+```
+
+---
+
+### STEP 3 — Phase 2: Candidate Discovery
+
+```
+1. Load yesterday's watchlist → these tickers are checked first
+2. web_search("pre-market gappers today YYYY-MM-DD volume")
+3. web_search("top stock movers today YYYY-MM-DD pre-market")
+→ produces initial candidate list (typically 20–60 tickers)
+```
+
+---
+
+### STEP 4 — Phase 3: Screen Each Candidate (repeat per ticker)
+
+```
+Is ticker on earnings calendar today?
+├── YES → HARD SKIP — never trade on earnings day
+└── NO  → get_premarket_data(ticker)
+           ├── gap < 2%   → SKIP — no further research on this ticker
+           ├── RVOL < 1.5 → SKIP — no further research on this ticker
+           └── gap ≥ 2% AND RVOL ≥ 1.5 → CONTINUE
+               ├── get_news(ticker)              → news_catalyst signal
+               ├── get_reddit_sentiment(ticker)  → contrarian_social signal
+               ├── get_notable_mentions(ticker)  → notable_mention signal
+               └── get_insider_activity(ticker)  → insider_buying signal
+```
+
+---
+
+### STEP 5 — Phase 4: Sam Validation (only for candidates that passed Step 4)
+
+```
+For each candidate that cleared gap + RVOL filters:
+  search_sam_weiss_briefings(ticker) → Sam's historical stance on this ticker
+  get_sam_market_outlook()           → macro framework (called at most once per session)
+
+Sam's view provides context only — it does NOT change setup_score.
+```
+
+---
+
+### STEP 6 — Scoring
+
+```
+setup_score =
+  IF 60+ completed trades exist:
+    sigmoid(Σ coef_i × signal_i + bias)   ← logistic regression model
+  ELSE:
+    active_signals / 10                    ← equal-weight fallback
+
+setup_score → one of three buckets:
+  ≥ 0.55           → attempt trade execution (Step 7)
+  0.45 – 0.55      → log_rejected_candidate (shadow log) + save_tomorrow_watchlist
+  < 0.45           → ignore — no logging
+```
+
+---
+
+### STEP 7 — Trade Execution Gates (when agent calls place_trade)
+
+Each gate runs in sequence. First failure blocks the trade immediately.
+
+```
+Gate 1: Persistent circuit breaker (circuit-breaker.json)?
+├── TRIPPED → blocked: "Circuit breaker — reset with: node agent.js reset-circuit"
+└── clear → continue
+
+Gate 2: Session circuit breaker (tripped this run)?
+├── TRIPPED → blocked
+└── clear → continue
+
+Gate 3: setup_score ≥ 0.55?
+├── NO  → blocked: "score X < 0.55 threshold"
+└── YES → continue
+
+Gate 4: Current time before 10:00am PT (17:00 UTC)?
+├── NO  → blocked: "Entry window closed — past 10am PT"
+└── YES → continue
+
+Gate 5: 3 consecutive losses in trades-log.json?
+├── YES → blocked: "3 consecutive losses — paused for manual review"
+└── NO  → continue
+
+Gate 6: Reconcile positions (second check, immediately before order)?
+├── MISMATCH → alert email + blocked: "Reconciliation mismatch"
+└── OK → continue
+
+Gate 7: Already at max concurrent positions (1 pilot / 2 steady-state)?
+├── YES → blocked: "Already at max positions"
+└── NO  → continue
+
+Gate 8: Circuit breaker thresholds (using live broker equity)?
+├── daily loss ≤ -1.5% of SOD balance
+│   → trip circuit, flatten ALL positions, alert email, blocked (persistent)
+├── weekly loss ≤ -5% of week-start balance
+│   → trip circuit, flatten ALL positions, alert email, blocked (persistent)
+└── within limits → continue
+
+Gate 9: Balance readable (equity > 0)?
+├── NO  → blocked: "Could not read account balance"
+└── YES → ALL GATES PASSED — execute order
+```
+
+---
+
+### STEP 8 — Order Execution
+
+```
+DRY_RUN = true (default)?
+├── YES → log intended order, use decision price as fill, write trade markdown
+│         state: CANDIDATE → FILLED (synthetic) → PROTECTED
+│         trades-open.json updated, no Robinhood call made
+└── NO  (live) → submit market order to Robinhood
+                  ├── ORDER_SUBMITTED → poll for fill confirmation
+                  ├── Fill received → compute slippage = (fill - decision) / decision
+                  │   ├── slippage > 2% → log warning (known gap: threshold too loose — item 36)
+                  │   └── record fill price
+                  └── state: CANDIDATE → ORDER_SUBMITTED → ORDER_PENDING → FILLED → PROTECTED
+                      trades-open.json updated with fill price, stop, target
+```
+
+---
+
+### STEP 9 — Exit Daemon (6:25am–1:00pm PT, 45-second poll loop)
+
+```
+Every 45 seconds, for each open position:
+
+Can get quote?
+├── NO (5th consecutive failure) → force-close for safety
+└── YES → price = current quote
+
+price ≤ stopPrice?
+├── YES → market sell — exit reason: "stop hit"
+└── NO  → check target
+
+price ≥ targetPrice?
+├── YES → market sell — exit reason: "target hit"
+└── NO  → hold
+
+After 6:45am PT (all 3 opening-range bars complete):
+  OR_low = min(bar1_low, bar2_low, bar3_low)
+  OR_low > current_stopPrice (tighter)?
+  ├── YES → update stopPrice = OR_low (stop only ever tightens, never loosens)
+  └── NO  → keep ATR stop
+
+Every 90 minutes: Haiku thesis-break check
+  (triggers only if VIX spike >5% OR news headline contains halt/fraud/SEC/downgrade)
+  ├── Haiku says "exit" → market sell — exit reason: "Haiku judgment: [reason]"
+  └── Haiku says "hold" → continue
+
+12:45pm PT hit (9:45am on early-close days)?
+└── force-close: market sell all remaining open positions
+```
+
+---
+
+### STEP 10 — Force-Close Failsafe (12:45pm PT, pure code)
+
+```
+Open positions in trades-open.json?
+├── NONE → exit cleanly — daemon handled everything
+└── ANY  → market sell each remaining position
+           → record closed trade with exit reason "force-close 12:45pm PT"
+           → update trade markdown with exit price + P&L
+
+Early-close day?
+├── YES → daemon already closed at 9:45am; force-close verifies nothing remains
+└── NO  → standard 12:45pm failsafe
+```
+
+---
+
+### STEP 11 — EOD (1:30pm PT)
+
+```
+Retrain logistic regression on all closed trades (if ≥ 60)
+├── < 60 trades → skip retraining, keep equal-weight fallback
+└── ≥ 60 trades → fit new coefficients, 80/20 blend with yesterday's weights
+                   walk-forward validate: this week vs last week accuracy
+                   save signal-weights.json
+
+Generate EOD report (Haiku):
+  get_fear_greed_vix()       → today's closing sentiment
+  get_market_data(ticker)    → closing prices for any open positions (should be none)
+  save_tomorrow_watchlist()  → gap candidates for tomorrow's pre-market scan
+
+Update rejected-candidates.json with EOD prices (shadow P&L)
+Append to expectancy-log.json (win rate, expectancy, profit factor)
+Email report to alvintsheth@gmail.com
+```
+
+---
+
+### STEP 12 — Health Monitor (2:15pm PT)
+
+```
+For each check:
+  sam-weiss-{today}.json exists?         → ✅ / ❌ scraper failure
+  recommendations-{today}.md exists?    → ✅ / ❌ scan agent crashed
+  eod-report-{today}.md exists?         → ✅ / ❌ EOD agent crashed
+  trades-open.json has 0 positions?     → ✅ / ❌ force-close failed (CHECK ROBINHOOD)
+  exit-daemon.log touched after 6:25am? → ✅ / ❌ daemon never started
+  force-close.log touched after 12:45pm?→ ✅ / ❌ failsafe job never fired
+
+Any failures?
+├── YES → send alert email: "🚨 Investing Agent — N failure(s) on YYYY-MM-DD"
+└── NO  → silence (no email = all green)
+```
 
 ---
 
