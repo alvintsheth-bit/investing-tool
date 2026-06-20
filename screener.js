@@ -136,14 +136,12 @@ async function screenTicker(ticker) {
   const yesterdayRegular = bars.filter(b => isRegularBar(b.ts) && barDate(b.ts) < today);
   if (!yesterdayRegular.length) return null;
   const prevClose      = yesterdayRegular.at(-1).close;
-  const yesterdayVol   = yesterdayRegular.reduce((s, b) => s + b.volume, 0);
 
   // Today's pre-market bars → current price + pre-market volume
   const preMarketBars = bars.filter(b => isPreMarketBar(b.ts) && barDate(b.ts) === today);
   if (!preMarketBars.length) return null;
 
   const preMarketPrice  = preMarketBars.at(-1).close;
-  const preMarketVolume = preMarketBars.reduce((s, b) => s + b.volume, 0);
 
   if (!prevClose || !preMarketPrice) return null;
 
@@ -152,20 +150,17 @@ async function screenTicker(ticker) {
   // Only surface stocks actually moving (>0.5% either direction)
   if (Math.abs(gapPct) < 0.5) return null;
 
-  // RVOL: pre-market volume vs expected pre-market volume (8% of prior day)
-  const expectedPreMktVol = yesterdayVol * 0.08;
-  const rvol = expectedPreMktVol > 0 ? preMarketVolume / expectedPreMktVol : null;
+  // Note: Yahoo returns volume=0 for all pre-market bars — RVOL not computable here.
+  // Agent computes RVOL from regular session volume via getPreMarketData after open.
 
   return {
     ticker,
     gapPct:         +gapPct.toFixed(2),
-    rvol:           rvol !== null ? +rvol.toFixed(2) : null,
+    rvol:           null, // not available from Yahoo 5-min pre-market bars
     preMarketPrice: +preMarketPrice.toFixed(2),
     prevClose:      +prevClose.toFixed(2),
-    preMarketVolume,
     preMarketBars:  preMarketBars.length,
-    // ranking score: gap magnitude × RVOL (null RVOL gets 0.5 penalty)
-    score:          Math.abs(gapPct) * (rvol ?? 0.5),
+    score:          Math.abs(gapPct), // rank by gap magnitude
   };
 }
 
