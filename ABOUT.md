@@ -84,8 +84,8 @@ DAILY  6:00 AM — agent.js scan (30 min before open, Claude Sonnet, 20 iteratio
                  • Phase 3: Research screener candidates in ranked order — news catalyst,
                  •           Reddit chatter, notable mentions, insider activity, ATR stop/target
                  • Phase 4: Sam validation per ticker (briefing search + outlook on demand)
-                 • Phase 5: Execute if setup_score > 0.55, log to trades-open.json
-                 •           Shadow-log candidates scoring 0.45–0.55 via log_rejected_candidate
+                 • Phase 5: Execute if setup_score ≥ 0.45, log to trades-open.json
+                 •           Shadow-log candidates scoring 0.35–0.45 via log_rejected_candidate
                  • Entry window: 6:00–10:00am PT only. LONG ONLY — no short positions.
                  • Scan report header shows screener input (e.g. "NVDA +3.2%, GE +2.1%")
                  • Logs to output/logs/analyze.log
@@ -328,7 +328,7 @@ The agent is explicitly instructed:
 2. Discover candidate stocks from web search and signals BEFORE reading Sam's view
 3. Score candidates using 10 independent signals (Sam NOT included)
 4. THEN consult Sam: his stance adjusts position size (full/standard/small) but not score
-5. Execute if setup_score >0.55 — Sam's stance provides context; model-driven sizing only after 200 live trades
+5. Execute if setup_score ≥0.45 — Sam's stance provides context; model-driven sizing only after 200 live trades
 
 ### Modes
 - `node agent.js` — analyze + trade (6:00am)
@@ -455,9 +455,9 @@ setup_score =
     active_signals / 10                    ← equal-weight fallback
 
 setup_score → one of three buckets:
-  ≥ 0.55           → attempt trade execution (Step 7)
-  0.45 – 0.55      → log_rejected_candidate (shadow log) + save_tomorrow_watchlist
-  < 0.45           → ignore — no logging
+  ≥ 0.45           → attempt trade execution (Step 7)
+  0.35 – 0.45      → log_rejected_candidate (shadow log) + save_tomorrow_watchlist
+  < 0.35           → ignore — no logging
 ```
 
 ---
@@ -475,8 +475,8 @@ Gate 2: Session circuit breaker (tripped this run)?
 ├── TRIPPED → blocked
 └── clear → continue
 
-Gate 3: setup_score ≥ 0.55?
-├── NO  → blocked: "score X < 0.55 threshold"
+Gate 3: setup_score ≥ 0.45?
+├── NO  → blocked: "score X < 0.45 threshold"
 └── YES → continue
 
 Gate 4: Current time before 10:00am PT (17:00 UTC)?
@@ -667,9 +667,9 @@ Trained daily at EOD using L2-regularized logistic regression in pure JavaScript
 **Thresholds:**
 | setup_score | Action |
 |-------------|--------|
-| > 0.55 | Enter trade (pilot: 1 position / 10% sizing) |
-| 0.45–0.55 | Shadow-log only via `log_rejected_candidate` |
-| < 0.45 | Avoid |
+| ≥ 0.45 | Enter trade (pilot: 1 position / 10% sizing) |
+| 0.35–0.45 | Shadow-log only via `log_rejected_candidate` |
+| < 0.35 | Avoid |
 
 Model-driven variable sizing (based on score confidence) is reserved until 200 live trades are logged (`isLive: true` field). Before that, all qualifying trades use flat pilot sizing.
 
@@ -852,7 +852,7 @@ Each closed trade has:
 ```
 
 ### Shadow Logging (`rejected-candidates.json`)
-Candidates scoring 0.45–0.55 (below entry threshold) are logged via `log_rejected_candidate`. At EOD, their actual closing price is filled in for shadow P&L tracking — enables calibrating the threshold over time.
+Candidates scoring 0.35–0.45 (below entry threshold) are logged via `log_rejected_candidate`. At EOD, their actual closing price is filled in for shadow P&L tracking — enables calibrating the threshold over time.
 
 ### Model Training (EOD)
 ```
@@ -1032,7 +1032,7 @@ Runs every Sunday evening and summarizes the Mon–Fri week just completed.
 
 3. **Signal Performance** — for each of the 10 signals: how many trades fired it, win rate
 
-4. **Setup Score Bands** — 0.55–0.65, 0.65–0.75, 0.75+: trade count, win rate, total P&L per band
+4. **Setup Score Bands** — 0.45–0.55, 0.55–0.65, 0.65+: trade count, win rate, total P&L per band
 
 ### Data Sources
 - `output/trades-log.json` — closed trades for the week (filtered by date range Mon–Fri)
@@ -1170,7 +1170,7 @@ investing-tool/
 │   ├── sod-balance.json             # Start-of-day balance (circuit breaker baseline)
 │   ├── circuit-breaker.json         # Persistent trip state — cleared by: node agent.js reset-circuit
 │   ├── expectancy-log.json          # Daily expectancy/profit-factor history
-│   ├── rejected-candidates.json     # Shadow log: 0.45–0.55 score candidates + EOD prices
+│   ├── rejected-candidates.json     # Shadow log: 0.35–0.45 score candidates + EOD prices
 │   │
 │   ├── trades/                      # Per-trade rationale files
 │   │   ├── 2026-06-14-NVDA-buy.md  # Entry data, signals, setup_score, exit outcome

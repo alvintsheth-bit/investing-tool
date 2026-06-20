@@ -1006,7 +1006,7 @@ const tools = [
       properties: {
         ticker:        { type: 'string' },
         side:          { type: 'string', enum: ['buy', 'sell'] },
-        setupScore:    { type: 'number', description: 'Signal confluence score 0-1. Equal-weight until 60+ trades; model-driven direction after 60; size variation only after 200 live trades. Must be >0.55 to trade.' },
+        setupScore:    { type: 'number', description: 'Signal confluence score 0-1. Equal-weight until 60+ trades; model-driven direction after 60; size variation only after 200 live trades. Must be >0.45 to trade.' },
         rationale:     { type: 'string', description: 'Why this stock today — specific pre-market data, catalyst, signal confluence.' },
         signals: {
           type: 'object',
@@ -1130,7 +1130,7 @@ async function executeTool(name, input) {
       transitionState(posRecord, TRADE_STATES.CANDIDATE, { setupScore });
 
       // Hard excludes
-      if (setupScore < 0.55) return { blocked: true, reason: `setup_score ${setupScore.toFixed(2)} < 0.55 threshold` };
+      if (setupScore < 0.45) return { blocked: true, reason: `setup_score ${setupScore.toFixed(2)} < 0.45 threshold` };
       if (new Date().getUTCHours() >= 17) return { blocked: true, reason: 'Entry window closed — past 10am PT' };
 
       const lossCheck = checkConsecutiveLosses();
@@ -1494,7 +1494,7 @@ market open. Slippage of 0.5-1% is normal; >2% is logged as a warning.
 
 HARD EXCLUDES (never trade):
   ✗ Earnings today before close
-  ✗ setup_score < 0.55
+  ✗ setup_score < 0.45
   ✗ Already at ${MAX_POSITIONS} open position(s)
   ✗ 3 consecutive losses (manual review required)
 
@@ -1510,10 +1510,10 @@ SIGNAL SCORING (setup_score — equal-weight until 60+ completed trades):
   contrarian_social   +   high overnight bearish chatter on fundamentally strong setup
   analyst_conviction  +   2+ recent upgrades or material PT raise
 
-TRADE IF: setup_score > 0.55 (size is fixed at ${positionSize} — no score-based size variation until 200+ live trades)
-SHADOW LOG: setup_score 0.45–0.55 passing gap/RVOL filters → call log_rejected_candidate
-WATCH ONLY: setup_score 0.45–0.55 → save_tomorrow_watchlist
-AVOID: setup_score < 0.45
+TRADE IF: setup_score ≥ 0.45 (size is fixed at ${positionSize} — no score-based size variation until 200+ live trades)
+SHADOW LOG: setup_score 0.35–0.45 → call log_rejected_candidate (shadow P&L tracking)
+WATCH ONLY: setup_score 0.35–0.45 → save_tomorrow_watchlist
+AVOID: setup_score < 0.35
 
 ═══════════════════════════════════════════════════════════════
 RESEARCH PHASES
@@ -1547,8 +1547,8 @@ Phase 4 — Sam validation (only after independent scoring):
   whether a stock is gapping 3% this morning with a real catalyst. Keep them separate.
 
 Phase 5 — Execute:
-  place_trade → only if setup_score > 0.55 AND earnings check passed
-  save_tomorrow_watchlist → tickers scoring 0.45–0.55
+  place_trade → only if setup_score ≥ 0.45 AND earnings check passed
+  save_tomorrow_watchlist → tickers scoring 0.35–0.45
 
 ═══════════════════════════════════════════════════════════════
 NASDAQ CORRECTION/RALLY REFERENCE
