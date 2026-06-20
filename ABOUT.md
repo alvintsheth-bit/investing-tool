@@ -1026,7 +1026,7 @@ Each EOD run appends: win rate, avg win $, avg loss $, expectancy ($/trade), pro
 ### Gmail Configuration
 ```
 GMAIL_USER=alvintsheth@gmail.com
-GMAIL_APP_PASSWORD=REDACTED_APP_PASSWORD  (Google App Password, not account password)
+GMAIL_APP_PASSWORD=[16-char Google App Password]  (not your account password)
 ```
 Uses `nodemailer` with Gmail SMTP (`smtp.gmail.com:587`). App password generated at myaccount.google.com → Security → 2-Step Verification → App passwords.
 
