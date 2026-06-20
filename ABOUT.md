@@ -70,8 +70,9 @@ DAILY  5:30 AM — scraper.js
 DAILY  5:55 AM — screener.js (pure code, no Claude — deterministic pre-filter)
                  • Builds universe: ~80 core liquid tickers + overnight earnings + yesterday watchlist
                  • Fetches Yahoo Finance 5-min intraday bars (includePrePost=true) for every ticker
-                 • Computes real gap% (pre-market price vs prior close) and RVOL from actual bars
-                 • Sorts by gap × RVOL, saves top 10 to output/screener-YYYY-MM-DD.json
+                 • Computes real gap% (pre-market price vs prior close) from 5-min bar closes
+                 • RVOL = null (Yahoo returns volume=0 for all pre-market bars — not computable here)
+                 • Sorts by gap magnitude (|gap%|), saves top 10 to output/screener-YYYY-MM-DD.json
                  • Runs in ~30s, finishes before agent starts
                  • Logs to output/logs/screener.log
 
@@ -297,6 +298,7 @@ Only factual, non-narrative data is pre-loaded. All Sam content is deliberately 
 |---------|-------|--------|
 | Learning memory (signal win rates) | dynamic | signal-weights.json |
 | Yesterday's watchlist + entry triggers | dynamic | watchlist-tomorrow.json |
+| Screener candidates (top 10 by gap%) | dynamic | screener-YYYY-MM-DD.json |
 | NASDAQ correction/rally patterns | 3,000 | nasdaq-historical.md (historical data) |
 
 **What is NOT pre-loaded (to prevent anchoring):**
@@ -308,7 +310,7 @@ Only factual, non-narrative data is pre-loaded. All Sam content is deliberately 
 - Today's trade alerts (what Sam bought/sold) → not pre-loaded; agent discovers candidates independently first
 - Today's watchlist (what Sam is monitoring) → not pre-loaded; prevents Sam's picks from anchoring tomorrow's watchlist
 
-Sam's data enters only via explicit tool calls in Phase 4, after the agent has independently scored each candidate. This ensures tomorrow's watchlist is driven by gap/RVOL/sector signals — not by what Sam is watching.
+Sam's data enters only via explicit tool calls in Phase 4, after the agent has independently scored each candidate. This ensures tomorrow's watchlist is driven by gap%/sector signals — not by what Sam is watching.
 
 ### API Resilience — 5xx Retry
 
@@ -351,6 +353,28 @@ isMarketDay()?
 
 ---
 
+### STEP 0.5 — Pre-Market Screener (5:55am, pure code — runs before agent)
+
+```
+screener.js (launchd job):
+  Builds universe: ~80 core liquid tickers + overnight earnings (FMP) + yesterday watchlist
+  For each ticker → Yahoo Finance 5-min bars (interval=5m&range=2d&includePrePost=true)
+    ├── No pre-market bars today → skip
+    ├── |gap%| < 0.5% → skip (not moving)
+    └── gap computed → include in results
+          • gapPct = (lastPreMarketClose - prevClose) / prevClose × 100
+          • rvol = null (Yahoo returns volume=0 for all pre-market bars)
+          • score = |gapPct|
+
+  Sort results by |gapPct|, take top 10
+  Save → output/screener-YYYY-MM-DD.json
+
+Agent reads this file at 6:00am and injects candidates into the scan prompt.
+If file is missing → agent proceeds with no candidates (screener crashed).
+```
+
+---
+
 ### STEP 1 — Pre-Flight Checks
 
 ```
@@ -381,26 +405,26 @@ get_earnings_calendar() → hard exclude list for today
 
 ---
 
-### STEP 3 — Phase 2: Candidate Discovery
+### STEP 3 — Phase 2: Earnings Exclusions
 
 ```
-1. Load yesterday's watchlist → these tickers are checked first
-2. web_search("pre-market gappers today YYYY-MM-DD volume")
-3. web_search("top stock movers today YYYY-MM-DD pre-market")
-→ produces initial candidate list (typically 20–60 tickers)
+get_earnings_calendar() → build hard exclude list for today
+→ any ticker reporting today is removed from the screener candidate list
 ```
 
 ---
 
-### STEP 4 — Phase 3: Screen Each Candidate (repeat per ticker)
+### STEP 4 — Phase 3: Research Screener Candidates (repeat per ticker)
+
+Candidates come from the screener file injected at prompt time — ranked by |gap%|.
+No gap or RVOL threshold gates here; all screener candidates are researched.
 
 ```
-Is ticker on earnings calendar today?
-├── YES → HARD SKIP — never trade on earnings day
-└── NO  → get_premarket_data(ticker)
-           ├── gap < 2%   → SKIP — no further research on this ticker
-           ├── RVOL < 1.5 → SKIP — no further research on this ticker
-           └── gap ≥ 2% AND RVOL ≥ 1.5 → CONTINUE
+For each candidate (in ranked order):
+  Is ticker on earnings calendar today?
+  ├── YES → HARD SKIP — never trade on earnings day
+  └── NO  → research this ticker:
+               ├── get_premarket_data(ticker)    → confirm gap, get RVOL from live data
                ├── get_news(ticker)              → news_catalyst signal
                ├── get_reddit_sentiment(ticker)  → contrarian_social signal
                ├── get_notable_mentions(ticker)  → notable_mention signal
