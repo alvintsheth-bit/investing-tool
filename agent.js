@@ -554,6 +554,9 @@ async function executeMarketOrder(ticker, side, dollarAmount, entryPrice, reason
   if (!acctNum) return { error: 'Could not get account number' };
 
   console.log(`  📤 ${label}`);
+  // Robinhood fractional share orders require market type — limit orders are not
+  // supported for fractional quantities. Slippage risk is managed post-fill via
+  // the slippage gate in place_trade (exits immediately if fill > 50% of stop).
   const result = await rhMCP('place_equity_order', {
     account_number: acctNum,
     symbol: ticker,
@@ -1244,7 +1247,6 @@ async function executeTool(name, input) {
             entryPrice  = parseFloat(filled.average_buy_price);
             slippagePct = Math.abs((entryPrice - decisionPrice) / decisionPrice * 100);
             transitionState(posRecord, TRADE_STATES.FILLED, { fillPrice: entryPrice, slippagePct: +slippagePct.toFixed(3) });
-            if (slippagePct > 2) console.warn(`  ⚠️  Entry slippage ${slippagePct.toFixed(2)}%: decision $${decisionPrice} → fill $${entryPrice}`);
             // Recompute stop/target from confirmed fill price (item 19)
             const stopDist = rawStop ? Math.abs((rawStop - decisionPrice) / decisionPrice) : (parseFloat(atr14 || 0) / decisionPrice) * 0.75;
             posRecord.entryPrice  = entryPrice;
@@ -1252,6 +1254,27 @@ async function executeTool(name, input) {
             posRecord.stopPrice   = parseFloat((entryPrice * (1 - stopDist)).toFixed(2));
             posRecord.targetPrice = parseFloat((entryPrice * (1 + stopDist * 1.5)).toFixed(2));
             transitionState(posRecord, TRADE_STATES.PROTECTED, { stopPrice: posRecord.stopPrice, targetPrice: posRecord.targetPrice });
+
+            // Slippage gate: if fill ate >50% of the stop distance, the thesis is already
+            // compromised before the first bar. Immediately exit rather than hold a position
+            // whose stop is effectively already hit.
+            if (stopDist > 0 && (slippagePct / 100) > stopDist * 0.5) {
+              console.warn(`  🚫 Slippage gate: ${slippagePct.toFixed(2)}% slippage > 50% of stop distance (${(stopDist*100).toFixed(2)}%) — immediate exit`);
+              await executeMarketOrder(ticker, 'sell', dollarAmount, entryPrice, 'slippage-exceeded-half-stop');
+              recordClosedTrade({
+                ticker, side, dollarAmount,
+                entryPrice, exitPrice: entryPrice,
+                pnl: 0, pnlPct: 0, rMultiple: 0,
+                maxFavorableExcursion: 0, maxAdverseExcursion: -(slippagePct),
+                signals, setupScore, rationale,
+                exitReason: `slippage-exceeded-half-stop (${slippagePct.toFixed(2)}% > ${(stopDist*50).toFixed(2)}% limit)`,
+                entryTime: posRecord.entryTime, exitTime: new Date().toISOString(),
+                date: today, isLive: true,
+                state: TRADE_STATES.CLOSED, stateHistory: posRecord.stateHistory,
+              });
+              return { blocked: true, reason: `Slippage gate: ${slippagePct.toFixed(2)}% fill slippage exceeded half the stop distance — position immediately closed` };
+            }
+            if (slippagePct > 2) console.warn(`  ⚠️  Entry slippage ${slippagePct.toFixed(2)}%: decision $${decisionPrice} → fill $${entryPrice}`);
             break;
           }
         }
@@ -1353,10 +1376,14 @@ async function flattenAllPositions(reason) {
         { state: TRADE_STATES.EXIT_PENDING, at: new Date().toISOString(), reason },
         { state: TRADE_STATES.CLOSED,       at: new Date().toISOString(), exitPrice: currentPrice, pnl: +pnl.toFixed(2) },
       ];
+      const stopDistPct = pos.stopPrice ? Math.abs((pos.entryPrice - pos.stopPrice) / pos.entryPrice) : null;
       recordClosedTrade({
         ticker: pos.ticker, side: pos.side, dollarAmount: pos.dollarAmount,
         entryPrice: pos.entryPrice, exitPrice: currentPrice,
         pnl: +pnl.toFixed(2), pnlPct: +pnlPct.toFixed(2),
+        rMultiple: stopDistPct ? +(pnlPct / 100 / stopDistPct).toFixed(3) : null,
+        maxFavorableExcursion: pos.maxFavorableExcursion ?? 0,
+        maxAdverseExcursion:   pos.maxAdverseExcursion   ?? 0,
         signals: pos.signals, setupScore: pos.setupScore, rationale: pos.rationale,
         exitReason: reason, entryTime: pos.entryTime, exitTime: new Date().toISOString(),
         date: today, isLive: !DRY_RUN,
@@ -1510,7 +1537,8 @@ SIGNAL SCORING (setup_score — equal-weight until 60+ completed trades):
   contrarian_social   +   high overnight bearish chatter on fundamentally strong setup
   analyst_conviction  +   2+ recent upgrades or material PT raise
 
-TRADE IF: setup_score ≥ 0.45 (size is fixed at ${positionSize} — no score-based size variation until 200+ live trades)
+TRADE IF: setup_score ≥ 0.45 (TEMPORARY threshold to bootstrap trade history — will rise to 0.55+ once model trains on 60+ real trades)
+SIZE: fixed at ${positionSize} — no score-based size variation until 200+ live trades
 SHADOW LOG: setup_score 0.35–0.45 → call log_rejected_candidate (shadow P&L tracking)
 WATCH ONLY: setup_score 0.35–0.45 → save_tomorrow_watchlist
 AVOID: setup_score < 0.35
@@ -1757,10 +1785,14 @@ async function runCheck() {
       console.log(`  [${pos.ticker}] Exiting — ${exitReason}`);
       const result = await executeMarketOrder(pos.ticker, 'sell', pos.dollarAmount, currentPrice, exitReason);
       if (!result.error) {
+        const _sdPct = pos.stopPrice ? Math.abs((pos.entryPrice - pos.stopPrice) / pos.entryPrice) : null;
         recordClosedTrade({
           ticker: pos.ticker, side: pos.side, dollarAmount: pos.dollarAmount,
           entryPrice: pos.entryPrice, exitPrice: currentPrice,
           pnl: parseFloat(pnl.toFixed(2)), pnlPct: parseFloat(pnlPct.toFixed(2)),
+          rMultiple: _sdPct ? +(pnlPct / 100 / _sdPct).toFixed(3) : null,
+          maxFavorableExcursion: pos.maxFavorableExcursion ?? 0,
+          maxAdverseExcursion:   pos.maxAdverseExcursion   ?? 0,
           signals: pos.signals, setupScore: pos.setupScore, rationale: pos.rationale,
           exitReason, entryTime: pos.entryTime, exitTime: new Date().toISOString(), date: today,
           state: TRADE_STATES.CLOSED, isLive: !DRY_RUN,
@@ -1818,10 +1850,14 @@ async function runForceClose() {
     const result = await executeMarketOrder(pos.ticker, 'sell', pos.dollarAmount, currentPrice, 'force-close 12:45pm PT');
 
     if (!result.error) {
+      const _fcSdPct = pos.stopPrice ? Math.abs((pos.entryPrice - pos.stopPrice) / pos.entryPrice) : null;
       recordClosedTrade({
         ticker: pos.ticker, side: pos.side, dollarAmount: pos.dollarAmount,
         entryPrice: pos.entryPrice, exitPrice: currentPrice,
         pnl: parseFloat(pnl.toFixed(2)), pnlPct: parseFloat(pnlPct.toFixed(2)),
+        rMultiple: _fcSdPct ? +(pnlPct / 100 / _fcSdPct).toFixed(3) : null,
+        maxFavorableExcursion: pos.maxFavorableExcursion ?? 0,
+        maxAdverseExcursion:   pos.maxAdverseExcursion   ?? 0,
         signals: pos.signals, setupScore: pos.setupScore, rationale: pos.rationale,
         state: TRADE_STATES.CLOSED, isLive: !DRY_RUN,
         exitReason: 'force-close 12:45pm PT', entryTime: pos.entryTime,

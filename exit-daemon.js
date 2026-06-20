@@ -289,10 +289,12 @@ async function closePosition(pos, currentPrice, exitReason) {
   // Item 35: CLOSED
   addStateHistory(pos, TRADE_STATES.CLOSED, { exitPrice: currentPrice, pnl: +pnl.toFixed(2) });
 
+  const stopDistPct = pos.stopPrice ? Math.abs((pos.entryPrice - pos.stopPrice) / pos.entryPrice) : null;
   recordClosedTrade({
     ticker: pos.ticker, side: pos.side, dollarAmount: pos.dollarAmount,
     entryPrice: pos.entryPrice, exitPrice: currentPrice,
     pnl: +pnl.toFixed(2), pnlPct: +pnlPct.toFixed(2),
+    rMultiple: stopDistPct ? +(pnlPct / 100 / stopDistPct).toFixed(3) : null,
     signals: pos.signals, setupScore: pos.setupScore, rationale: pos.rationale,
     maxFavorableExcursion: pos.maxFavorableExcursion ?? 0,
     maxAdverseExcursion:   pos.maxAdverseExcursion   ?? 0,

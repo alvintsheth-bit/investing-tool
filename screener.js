@@ -135,7 +135,12 @@ async function screenTicker(ticker) {
   // Yesterday's regular session bars → previous close + day volume
   const yesterdayRegular = bars.filter(b => isRegularBar(b.ts) && barDate(b.ts) < today);
   if (!yesterdayRegular.length) return null;
-  const prevClose      = yesterdayRegular.at(-1).close;
+  const prevClose = yesterdayRegular.at(-1).close;
+
+  // Quality filters: skip penny stocks and thin names
+  if (!prevClose || prevClose < 5) return null; // price floor
+  const yesterdayDollarVol = yesterdayRegular.reduce((s, b) => s + (b.volume || 0) * (b.close || 0), 0);
+  if (yesterdayDollarVol < 10_000_000) return null; // <$10M daily dollar volume → too thin
 
   // Today's pre-market bars → current price + pre-market volume
   const preMarketBars = bars.filter(b => isPreMarketBar(b.ts) && barDate(b.ts) === today);

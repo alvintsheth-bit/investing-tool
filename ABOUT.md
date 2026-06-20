@@ -277,6 +277,8 @@ Scraped the entire site on first run. Handles complex interactive pages:
 **Max iterations:** 20 (analyze) / 10 (EOD) tool-use loops per session
 **Max tokens per response:** 8,192
 
+**Edge hypothesis:** Liquid stocks that gap ≥2% pre-market on a clear overnight catalyst (news, earnings surprise, notable mention) and whose gap is confirmed by elevated RVOL after the open tend to trend directionally through the first 90 minutes of the session — the edge is in identifying which catalyst types produce sustained intraday moves vs. gaps that fade within the opening 30 minutes.
+
 ### How the Agentic Loop Works
 
 ```
@@ -456,6 +458,8 @@ setup_score =
 
 setup_score → one of three buckets:
   ≥ 0.45           → attempt trade execution (Step 7)
+                      ⚠️  TEMPORARY — lowered from 0.55 to bootstrap trade history.
+                      Will return to 0.55+ once logistic regression trains on 60+ real trades.
   0.35 – 0.45      → log_rejected_candidate (shadow log) + save_tomorrow_watchlist
   < 0.35           → ignore — no logging
 ```
@@ -517,9 +521,13 @@ DRY_RUN = true (default)?
 │         state: CANDIDATE → FILLED (synthetic) → PROTECTED
 │         trades-open.json updated, no Robinhood call made
 └── NO  (live) → submit market order to Robinhood
+                  │   (fractional shares require market orders — limit orders not supported)
                   ├── ORDER_SUBMITTED → poll for fill confirmation
                   ├── Fill received → compute slippage = (fill - decision) / decision
-                  │   ├── slippage > 2% → log warning (known gap: threshold too loose — item 36)
+                  │   ├── slippage > 50% of stop distance → SLIPPAGE GATE:
+                  │   │     immediately exit position, record as closed, return blocked
+                  │   │     (thesis already compromised before first bar)
+                  │   ├── slippage > 2% → log warning
                   │   └── record fill price
                   └── state: CANDIDATE → ORDER_SUBMITTED → ORDER_PENDING → FILLED → PROTECTED
                       trades-open.json updated with fill price, stop, target
@@ -745,7 +753,7 @@ Each trade gets a dedicated markdown file documenting:
 - **All 10 signal verdicts** — ✅ or ❌ for each signal
 - **Stop/target levels** — ATR-14 at entry; opening-range stop updated after 6:45am PT if OR low is tighter (never loosens); immediate exit if price already below new OR stop when check fires
 - **Fill price confirmation** — live mode polls broker post-order for actual fill; slippage always logged, warning at >2%
-  > **Known gap (item 36, not yet implemented):** the 2% warning threshold is too loose — it can exceed the entire 1–4% ATR stop range, meaning a trade could be stopped out before the thesis is even tested. The fix (tighten to ~0.5%, or block the trade if slippage > half the stop distance) is deferred but named.
+- **Slippage gate (item 36, implemented)** — if fill slippage exceeds 50% of the stop distance, the position is immediately exited and recorded as closed. Rationale: a fill that eats more than half the stop means the thesis is already compromised before the first bar prints.
 - **Order state machine** — every trade tracks explicit states with timestamps:
   `CANDIDATE → ORDER_SUBMITTED → ORDER_PENDING → FILLED → PROTECTED → EXIT_PENDING → CLOSED`
   Stop/target only enforced once `PROTECTED`. Entry slippage computed at `FILLED` state from confirmed fill price.
@@ -842,6 +850,7 @@ Each closed trade has:
   "entryPrice": 205.19, "exitPrice": 208.40,
   "decisionPrice": 205.00, "slippagePct": 0.09,
   "pnl": 15.60, "pnlPct": 1.56,
+  "rMultiple": 0.62,
   "exitReason": "target hit",
   "signals": { "premarket_gap_up": true, "rvol_spike": true, ... },
   "setupScore": 0.68,
@@ -849,6 +858,8 @@ Each closed trade has:
   "maxFavorableExcursion": 1.8,
   "maxAdverseExcursion": -0.4
 }
+```
+`rMultiple` = pnlPct / stopDistPct — measures outcome in units of risk taken. A +1R trade recovered the full stop distance in profit; -1R is a full stop-out. This is more informative than binary win/loss for model training and expectancy tracking.
 ```
 
 ### Shadow Logging (`rejected-candidates.json`)
@@ -1386,7 +1397,7 @@ Items are stacked: P1 = do now, P2 = after first 20 live trades, P3 = after firs
 
 | # | Item | Why |
 |---|------|-----|
-| 11 | **Slippage threshold auto-calibration (Item 36)** | Currently hardcoded 2% entry slippage alert. Should auto-calibrate from the actual fill vs decision price spread observed over 20+ live trades. |
+| 11 | ~~**Slippage threshold (Item 36)**~~ | **Done.** Slippage gate implemented: exit immediately if fill slippage > 50% of stop distance. Remaining future work: auto-calibrate the 50% threshold from observed live fills. |
 | 12 | **SMS/push as secondary alert channel** | Gmail is the single alerting channel. If credentials expire or Gmail throttles, alerts are silent. Twilio SMS or Apple push as fallback. |
 | 13 | **Monthly/quarterly/annual P&L report** | weekly-report.js is built; monthly/quarterly/annual deferred until there's enough data (need 3+ months). |
 | 14 | **Sierra-style observability patterns** | Structured event emission, tiered health check severity (critical vs warning vs info), human escalation protocol. Only relevant if scaling to larger capital or multiple strategies. |
