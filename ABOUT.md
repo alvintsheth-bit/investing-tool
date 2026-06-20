@@ -68,7 +68,7 @@ DAILY  5:30 AM — scraper.js
                  • Logs to output/logs/scrape.log
 
 DAILY  5:55 AM — screener.js (pure code, no Claude — deterministic pre-filter)
-                 • Builds universe: ~80 core liquid tickers + overnight earnings + yesterday watchlist
+                 • Builds universe: 79 curated large/liquid tickers + AMC earnings (yesterday) + yesterday watchlist
                  • Fetches Yahoo Finance 5-min intraday bars (includePrePost=true) for every ticker
                  • Computes real gap% (pre-market price vs prior close) from 5-min bar closes
                  • RVOL = null (Yahoo returns volume=0 for all pre-market bars — not computable here)
@@ -359,16 +359,27 @@ isMarketDay()?
 
 ```
 screener.js (launchd job):
-  Builds universe: ~80 core liquid tickers + overnight earnings (FMP) + yesterday watchlist
-  For each ticker → Yahoo Finance 5-min bars (interval=5m&range=2d&includePrePost=true)
-    ├── No pre-market bars today → skip
-    ├── |gap%| < 0.5% → skip (not moving)
-    └── gap computed → include in results
-          • gapPct = (lastPreMarketClose - prevClose) / prevClose × 100
-          • rvol = null (Yahoo returns volume=0 for all pre-market bars)
-          • score = |gapPct|
+  Builds universe:
+    • ~79 core tickers (hand-curated: major-exchange listed, ~$10B+ market cap,
+      $50M+ avg daily dollar volume, no OTC, no recent IPOs)
+    • + AMC earnings from yesterday (FMP) — reported after yesterday's close,
+        pre-market gap reflects overnight reaction. Phase 2 hard-excludes these
+        from same-day trading; they surface for next-day watching only.
+        BMO reporters are excluded — Phase 2 blocks them same-day anyway.
+    • + yesterday's watchlist (candidates that scored 0.35–0.45 the prior session)
 
-  Sort results by |gapPct|, take top 10
+  Quality filter per ticker (screenTicker):
+    ├── prevClose < $5 → skip
+    ├── yesterday dollar volume < $10M → skip (too thin for liquid entry/exit)
+    ├── no pre-market bars today → skip
+    └── |gap%| < 0.5% → skip (not moving)
+
+  For survivors:
+    • gapPct = (lastPreMarketClose - prevClose) / prevClose × 100
+    • rvol = null (Yahoo returns volume=0 for all pre-market bars)
+    • score = |gapPct|
+
+  Sort by |gapPct|, take top 10
   Save → output/screener-YYYY-MM-DD.json
 
 Agent reads this file at 6:00am and injects candidates into the scan prompt.

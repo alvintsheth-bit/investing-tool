@@ -57,8 +57,10 @@ const CORE_UNIVERSE = [
   // China ADRs (high volatility)
   'BABA', 'BIDU', 'JD', 'PDD', 'NIO', 'XPEV', 'LI',
   // High-beta / momentum
-  'GME', 'ACHR', 'ACMR', 'SMCI',
+  'GME', 'ACHR', 'ACMR',
 ];
+// Universe criteria: major-exchange listed, ~$10B+ market cap, $50M+ avg daily dollar volume,
+// no OTC, no recent IPOs. Any future additions should meet this bar.
 
 // ─── Data Fetching ────────────────────────────────────────────────────────────
 const sleep = ms => new Promise(r => setTimeout(r, ms));
@@ -94,8 +96,12 @@ async function fmpEarnings() {
     if (!r.ok) return [];
     const data = await r.json();
     if (!Array.isArray(data)) return [];
+    // AMC yesterday only: reported after yesterday's close, pre-market gap reflects reaction.
+    // Phase 2 in the scan hard-excludes earnings-day names from trading — these enter the
+    // screener for next-day watching, not same-day execution.
+    // BMO today excluded: Phase 2 blocks them anyway; including them wastes screener slots.
     return data
-      .filter(e => e.time === 'amc' || e.time === 'bmo')
+      .filter(e => e.time === 'amc' && e.date === yesterday)
       .map(e => e.symbol)
       .filter(Boolean);
   } catch { return []; }
