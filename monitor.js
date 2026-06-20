@@ -74,7 +74,22 @@ async function main() {
   const failures = [];
   const results  = [];
 
-  // 1. Scrape produced today's data file
+  // 1. Screener produced today's candidates file
+  const screenerFile = join(OUTPUT_DIR, `screener-${today}.json`);
+  if (fileExists(screenerFile)) {
+    try {
+      const s = JSON.parse(readFileSync(screenerFile, 'utf-8'));
+      const n = s?.candidates?.length ?? 0;
+      results.push(`✅ Screener     screener file present (${n} candidate(s) from ${s?.universeSize ?? '?'} stocks)`);
+    } catch {
+      results.push('✅ Screener     screener file present (unreadable)');
+    }
+  } else {
+    failures.push('❌ Screener     screener-' + today + '.json MISSING — screener may have crashed');
+    results.push('❌ Screener     screener file MISSING');
+  }
+
+  // 2. Scrape produced today's data file
   const scrapeFile = join(OUTPUT_DIR, `sam-weiss-${today}.json`);
   if (fileExists(scrapeFile)) {
     results.push('✅ Scrape       sam-weiss file present');
@@ -83,7 +98,7 @@ async function main() {
     results.push('❌ Scrape       sam-weiss file MISSING');
   }
 
-  // 2. Scan (6am) produced today's recommendations file
+  // 3. Scan (6am) produced today's recommendations file
   const scanFile = join(OUTPUT_DIR, `recommendations-${today}.md`);
   if (fileExists(scanFile)) {
     results.push('✅ Scan (6am)   recommendations file present');
@@ -92,7 +107,7 @@ async function main() {
     results.push('❌ Scan (6am)   recommendations file MISSING');
   }
 
-  // 3. EOD report produced
+  // 4. EOD report produced
   const eodFile = join(OUTPUT_DIR, `eod-report-${today}.md`);
   if (fileExists(eodFile)) {
     results.push('✅ EOD (1:30pm) report file present');
@@ -101,7 +116,7 @@ async function main() {
     results.push('❌ EOD (1:30pm) report file MISSING');
   }
 
-  // 4. Open positions cleared (force-close worked)
+  // 5. Open positions cleared (force-close worked)
   const openData = loadOpenPositions();
   const isStaleDate = openData.date && openData.date !== today;
   const openCount   = isStaleDate ? 0 : (openData.positions?.length ?? 0);
@@ -117,7 +132,7 @@ async function main() {
     results.push(`❌ Positions    ${openCount} still open: ${tickers}`);
   }
 
-  // 5. Exit-daemon: verify it STARTED (~6:25am) AND ran through end of session (~12:30pm+)
+  // 6. Exit-daemon: verify it STARTED (~6:25am) AND ran through end of session (~12:30pm+)
   // A log touched only at 6:25am but not again means the daemon crashed before the session ended.
   const daemonLog = join(OUTPUT_DIR, 'logs', 'exit-daemon.log');
   const daemonStarted = fileTouchedAfter(daemonLog, 6.4);
@@ -132,7 +147,7 @@ async function main() {
     results.push('✅ Exit-daemon  started ~6:25am and ran through end of session');
   }
 
-  // 6. Force-close log touched after 12:45pm (failsafe ran)
+  // 7. Force-close log touched after 12:45pm (failsafe ran)
   const fcLog = join(OUTPUT_DIR, 'logs', 'force-close.log');
   if (fileTouchedAfter(fcLog, 12.75)) {
     results.push('✅ Force-close  log updated after 12:45pm');

@@ -67,18 +67,26 @@ DAILY  5:30 AM — scraper.js
                  • Saves output/sam-weiss-YYYY-MM-DD.json
                  • Logs to output/logs/scrape.log
 
+DAILY  5:55 AM — screener.js (pure code, no Claude — deterministic pre-filter)
+                 • Builds universe: ~80 core liquid tickers + overnight earnings + yesterday watchlist
+                 • Fetches Yahoo Finance 5-min intraday bars (includePrePost=true) for every ticker
+                 • Computes real gap% (pre-market price vs prior close) and RVOL from actual bars
+                 • Sorts by gap × RVOL, saves top 10 to output/screener-YYYY-MM-DD.json
+                 • Runs in ~30s, finishes before agent starts
+                 • Logs to output/logs/screener.log
+
 DAILY  6:00 AM — agent.js scan (30 min before open, Claude Sonnet, 20 iterations)
                  • Live market-day check via Yahoo Finance (fail closed if unavailable)
                  • Pre-flight: verify balance, reconcile vs Robinhood, save SOD balance
                  • Phase 1: VIX, Fear & Greed, sector pre-market moves (sets risk appetite)
-                 • Phase 2: Discover pre-market gappers (>2% gap, RVOL >2x)
-                 • Phase 3: Screen each — get_premarket_data (gap%, RVOL, ATR-14, stop/target)
-                 •           news catalyst, Reddit overnight chatter, notable mentions
-                 • Phase 4: Sam validation (briefing search + outlook on demand)
+                 • Phase 2: Earnings calendar — build hard exclude list for today
+                 • Phase 3: Research screener candidates in ranked order — news catalyst,
+                 •           Reddit chatter, notable mentions, insider activity, ATR stop/target
+                 • Phase 4: Sam validation per ticker (briefing search + outlook on demand)
                  • Phase 5: Execute if setup_score > 0.55, log to trades-open.json
                  •           Shadow-log candidates scoring 0.45–0.55 via log_rejected_candidate
-                 • Entry window: 6:00–10:00am PT only. No buys after 10am PT.
-                 • Orders placed pre-6:30am queue for market open (slippage logged)
+                 • Entry window: 6:00–10:00am PT only. LONG ONLY — no short positions.
+                 • Scan report header shows screener input (e.g. "NVDA +3.2%, GE +2.1%")
                  • Logs to output/logs/analyze.log
 
 DAILY  6:25 AM — exit-daemon.js (long-running daemon, runs until 1pm PT)
@@ -112,7 +120,7 @@ DAILY  1:30 PM — agent.js eod (Claude Haiku, 10 iterations)
                  • Logs to output/logs/eod.log
 
 DAILY  2:15 PM — monitor.js (health check — no Claude, no cost)
-                 • Verifies scrape file, recommendations, EOD report, daemon log all exist
+                 • Verifies screener, scrape, recommendations, EOD report, daemon log all exist
                  • Checks trades-open.json is empty (positions cleared)
                  • Alerts alvintsheth@gmail.com if anything is wrong
 ```
@@ -1085,10 +1093,11 @@ The nvm-managed Node is hardcoded in all plists:
 **Schedule:** 2:15pm PT daily (after EOD completes)
 **Cost:** $0 — pure code, no Claude API calls
 
-Runs 6 checks every trading day and sends a failure email if anything is wrong:
+Runs 7 checks every trading day and sends a failure email if anything is wrong:
 
 | Check | Pass condition | Failure means |
 |-------|---------------|---------------|
+| Screener | `screener-{today}.json` exists | screener crashed — agent had no candidates |
 | Scrape | `sam-weiss-{today}.json` exists | scraper crashed or never ran |
 | Scan | `recommendations-{today}.md` exists | scan agent crashed |
 | EOD | `eod-report-{today}.md` exists | EOD agent crashed |
@@ -1357,6 +1366,55 @@ Items are stacked: P1 = do now, P2 = after first 20 live trades, P3 = after firs
 | 12 | **SMS/push as secondary alert channel** | Gmail is the single alerting channel. If credentials expire or Gmail throttles, alerts are silent. Twilio SMS or Apple push as fallback. |
 | 13 | **Monthly/quarterly/annual P&L report** | weekly-report.js is built; monthly/quarterly/annual deferred until there's enough data (need 3+ months). |
 | 14 | **Sierra-style observability patterns** | Structured event emission, tiered health check severity (critical vs warning vs info), human escalation protocol. Only relevant if scaling to larger capital or multiple strategies. |
+
+---
+
+## 26. Architecture Archive — What Was Removed and Why
+
+Design decisions that were changed, and the reasoning behind each removal. Kept here so the same mistakes aren't made twice.
+
+### Web search candidate discovery (removed June 2026)
+
+**What it was:** Phase 2 of the scan prompt told the agent to run `web_search("pre-market gappers today YYYY-MM-DD volume")` and `web_search("top stock movers today YYYY-MM-DD pre-market")` to discover which stocks to research.
+
+**Why it was removed:** Three compounding problems:
+1. DuckDuckGo results are article-based and often hours stale by 6am PT. The "top gappers" article from 5am may already be outdated.
+2. The agent had no fixed universe — it researched whatever the LLM decided looked interesting from search snippets. Different tickers every day, no consistency.
+3. The real discovery question ("what is moving right now?") is a data question, not a search question. Yahoo 5-min intraday bars answer it deterministically.
+
+**What replaced it:** `screener.js` — runs at 5:55am, screens a fixed 80-ticker universe plus overnight earnings plus yesterday's watchlist using real 5-min bar data. Outputs a ranked JSON file the agent reads directly.
+
+---
+
+### Sam Weiss watchlist and trade alerts in scan prompt (removed June 2026)
+
+**What it was:** The scan prompt injected Sam's current watchlist (what he's monitoring) and trade alerts (what he bought/sold that day) directly into the system prompt context before the agent began research.
+
+**Why it was removed:** The agent could see Sam's watchlist from token 0, before running any independent research. This anchored candidate discovery — tickers Sam was watching naturally appeared on tomorrow's watchlist regardless of independent signal quality. The intent was always for Sam to be a Phase 4 validation layer; pre-loading his watchlist undermined that at a structural level.
+
+**What replaced it:** Sam's data enters only via explicit tool calls in Phase 4 (`search_sam_weiss_briefings`, `get_sam_market_outlook`) after the agent has independently scored each screener candidate.
+
+---
+
+### Sam macro stance as session veto (fixed June 2026)
+
+**What it was:** The prompt said "Sam validation" but didn't prevent the agent from using Sam's macro positioning (e.g., "Sam is buying QQQ puts") as a reason to stand down for the entire session — even when individual setups had valid scores.
+
+**Why it was wrong:** Sam runs long-dated options positions (months to years). His portfolio hedges reflect multi-month macro views, not intraday momentum. An agent standing down because "Sam is hedging" is conflating time horizons. A stock gapping 3% on a product launch is a valid day trade regardless of Sam's QQQ puts.
+
+**What was added:** Explicit hard rules in the prompt: Sam's macro stance cannot block a trade, cannot veto a session, and cannot change `setup_score`. His view on a specific ticker is context only.
+
+---
+
+### Short selling (removed June 2026)
+
+**What it was:** The scan prompt allowed the agent to identify short setups (e.g., "XLE short — gap down >2%") and add them to the watchlist.
+
+**Why it was removed:** Robinhood retail accounts don't support shorting stock. The agent was producing short setups that could never execute, wasting research iterations on them. The system is long-only.
+
+**What replaced it:** "LONG ONLY — no short positions under any circumstances" added to the hard rules section of the scan prompt.
+
+---
 
 *Last updated: June 2026*
 *Built by Alvin Tsheth using Claude Code*

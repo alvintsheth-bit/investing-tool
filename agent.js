@@ -1437,19 +1437,46 @@ async function preflightChecks() {
 }
 
 // ─── Scan Prompt ──────────────────────────────────────────────────────────────
+function loadScreenerCandidates() {
+  const path = join(OUTPUT_DIR, `screener-${today}.json`);
+  if (!existsSync(path)) return null;
+  try { return JSON.parse(readFileSync(path, 'utf-8')); } catch { return null; }
+}
+
 function buildScanPrompt(balance, openPositions, weights) {
   const nasdaqRef     = loadKBFile('nasdaq-historical.md', 2000);
   const positionSize  = balance ? `$${computePositionDollars(balance)}` : '17.5% of balance';
+  const screener      = loadScreenerCandidates();
 
   const liveTradeCount = computeLiveTradeCount();
   const modelStatusNote = liveTradeCount < 200
     ? `Using equal-weight scoring (need ${200 - liveTradeCount} more live trades for model-driven sizing). Size is FIXED at ${positionSize} regardless of score.`
     : `Model-driven sizing active (${liveTradeCount} live trades).`;
 
+  const screenerBlock = screener?.candidates?.length
+    ? `═══════════════════════════════════════════════════════════════
+PRE-SCREENED CANDIDATES — ${today} (ranked by gap × RVOL)
+═══════════════════════════════════════════════════════════════
+Screened ${screener.universeSize} liquid stocks at 5:55am. These ${screener.candidates.length} had pre-market activity:
+
+${screener.candidates.map((c, i) =>
+  `${i + 1}. ${c.ticker.padEnd(6)} gap=${c.gapPct > 0 ? '+' : ''}${c.gapPct}%  RVOL=${c.rvol ?? 'n/a'}x  pre-mkt=$${c.preMarketPrice}  prev close=$${c.prevClose}`
+).join('\n')}
+
+Research these IN ORDER (#1 first). Do NOT invent additional tickers.`
+    : `═══════════════════════════════════════════════════════════════
+PRE-SCREENED CANDIDATES — ${today}
+═══════════════════════════════════════════════════════════════
+⚠️  Screener file not found — falling back to yesterday's watchlist as candidates.
+Research yesterday's watchlist tickers and use get_premarket_data to check for any gaps.`;
+
   return `You are a personal day-trading agent for Alvin. Today is ${today}. DAY TRADE session — all positions CLOSED by 12:45pm PT (exit-daemon + force-close failsafe).
+LONG ONLY — no short positions under any circumstances.
 ${DRY_RUN ? '\n⚠️  DRY RUN MODE — orders logged but NOT submitted to Robinhood. Research and score as if live.\n' : ''}
 ${PILOT_MODE ? `\n🧪 PILOT MODE — 1 position max, ${positionSize} fixed size, ~0.25% max planned loss per trade. Scale to steady-state after 20-30 clean live trades.\n` : ''}
 ${buildLearningsContext()}
+
+${screenerBlock}
 
 ═══════════════════════════════════════════════════════════════
 DAY TRADING RULES
@@ -1496,23 +1523,28 @@ Phase 1 — Market context (call ONCE each):
   get_fear_greed_vix → sets today's risk appetite
   get_sector_rotation → which sectors are gapping pre-market
 
-Phase 2 — Candidate discovery (before Sam):
-  get_earnings_calendar → hard exclude list
-  web_search for "pre-market gappers today ${today} volume"
-  web_search for "top stock movers today ${today} pre-market"
-  Yesterday's watchlist tickers are candidates — check them first
+Phase 2 — Earnings exclusions:
+  get_earnings_calendar → build hard exclude list (earnings today = never trade, skip immediately)
 
-Phase 3 — Screen each candidate:
-  get_premarket_data [ticker] → gap%, RVOL, ATR stop/target — do this FIRST
-  Skip if gap <2% or RVOL <1.5
-  get_news [ticker] → overnight catalyst?
+Phase 3 — Research each screener candidate (work through the ranked list above):
+  get_premarket_data [ticker] → ATR-14, RSI, stop/target levels (gap% already known from screener)
+  get_news [ticker] → what is the overnight catalyst?
   get_reddit_sentiment [ticker] → overnight chatter signal
-  get_notable_mentions [ticker] → if there's a notable angle
+  get_notable_mentions [ticker] → executive order, CEO mention, Congressional trade
   get_insider_activity [ticker] → SEC Form 4 context
 
 Phase 4 — Sam validation (only after independent scoring):
-  search_sam_weiss_briefings [ticker] → Sam's historical stance
+  search_sam_weiss_briefings [ticker] → Sam's historical stance on this specific ticker
   get_sam_market_outlook → macro framework if needed
+
+  SAM'S ROLE IS CONTEXT ONLY — HARD RULES:
+  ✗ Sam's macro stance (hedging, reducing exposure, bearish outlook) CANNOT block a trade
+  ✗ Sam's portfolio positioning CANNOT be used as a session-level veto
+  ✗ Sam's view CANNOT change setup_score
+  ✓ Sam's view on a specific ticker can increase or decrease your narrative confidence
+  ✓ If Sam explicitly says "avoid this ticker" that is worth noting in rationale — nothing more
+  Sam runs long-dated options positions (months to years). His hedges say nothing about
+  whether a stock is gapping 3% this morning with a real catalyst. Keep them separate.
 
 Phase 5 — Execute:
   place_trade → only if setup_score > 0.55 AND earnings check passed
@@ -1644,11 +1676,16 @@ async function runScan() {
   const costUsd = (inputTokens * 3.0 + outputTokens * 15.0) / 1_000_000;
   console.log(`\n[Scan] Tokens — input: ${inputTokens.toLocaleString()} | output: ${outputTokens.toLocaleString()} | est. cost: $${costUsd.toFixed(4)}`);
 
-  const finalText = response.content.filter(b => b.type === 'text').map(b => b.text).join('\n');
-  const outPath   = join(OUTPUT_DIR, `recommendations-${today}.md`);
-  const header    = CIRCUIT.tradesExecuted.length
-    ? `# Scan Report — ${today}\n\n## Trades\n${CIRCUIT.tradesExecuted.map(t => `- ${t.side.toUpperCase()} $${t.dollarAmount} ${t.ticker} @ $${t.entryPrice} | score=${t.setupScore?.toFixed(2)}`).join('\n')}\n\n`
-    : `# Scan Report — ${today}\n\n`;
+  const finalText  = response.content.filter(b => b.type === 'text').map(b => b.text).join('\n');
+  const outPath    = join(OUTPUT_DIR, `recommendations-${today}.md`);
+  const screener   = loadScreenerCandidates();
+  const screenerSummary = screener?.candidates?.length
+    ? `Screener: ${screener.candidates.length} candidates from ${screener.universeSize} stocks — ` +
+      screener.candidates.slice(0, 3).map(c => `${c.ticker} ${c.gapPct > 0 ? '+' : ''}${c.gapPct}%`).join(', ')
+    : 'Screener: no candidates (fallback to watchlist)';
+  const header = CIRCUIT.tradesExecuted.length
+    ? `# Scan Report — ${today}\n_${screenerSummary}_\n\n## Trades\n${CIRCUIT.tradesExecuted.map(t => `- ${t.side.toUpperCase()} $${t.dollarAmount} ${t.ticker} @ $${t.entryPrice} | score=${t.setupScore?.toFixed(2)}`).join('\n')}\n\n`
+    : `# Scan Report — ${today}\n_${screenerSummary}_\n\n`;
   writeFileSync(outPath, header + finalText);
   console.log(`\n✅ Scan report: ${outPath}`);
 }
