@@ -39,25 +39,28 @@ const CORE_UNIVERSE = [
   // Mega-cap tech & AI
   'NVDA', 'TSLA', 'AAPL', 'META', 'MSFT', 'AMZN', 'GOOGL', 'AMD', 'PLTR', 'COIN',
   'MSTR', 'ARM', 'SMCI', 'AVGO', 'CRM', 'NFLX', 'UBER', 'HOOD', 'SNOW', 'CRWD',
-  'PANW', 'DDOG', 'NET', 'SHOP', 'SQ', 'PYPL', 'RBLX', 'IONQ', 'RGTI', 'SPCX',
+  'DDOG', 'NET', 'SHOP', 'SQ', 'PYPL', 'RBLX', 'IONQ',
   // Semiconductors
   'INTC', 'QCOM', 'MU', 'AMAT', 'LRCX', 'TSM', 'MRVL', 'SOXL', 'KLAC',
   // Financials
-  'JPM', 'GS', 'BAC', 'MS', 'C', 'WFC', 'V', 'MA',
+  'JPM', 'GS', 'BAC', 'MS', 'C', 'WFC', 'MA',
   // Industrials
-  'GE', 'CAT', 'DE', 'HON', 'RTX', 'URI', 'BA',
-  // Energy (long only)
+  'GE', 'CAT', 'DE', 'URI', 'BA',
+  // Energy
   'XOM', 'CVX', 'OXY',
   // Healthcare / Biotech
-  'LLY', 'UNH', 'ABBV', 'MRNA', 'BNTX',
+  'LLY', 'MRNA', 'BNTX',
   // Consumer
-  'NKE', 'SBUX', 'MCD', 'HD', 'TGT', 'WMT',
+  'NKE', 'SBUX', 'HD', 'TGT',
   // Materials
   'FCX', 'NUE', 'CLF', 'AA',
   // China ADRs (high volatility)
-  'BABA', 'BIDU', 'JD', 'PDD', 'NIO', 'XPEV', 'LI',
+  'BABA', 'PDD', 'NIO', 'XPEV', 'LI',
+  // Bitcoin miners / crypto adjacent
+  'MARA', 'RIOT',
   // High-beta / momentum
-  'GME', 'ACHR', 'ACMR',
+  'GME', 'RDDT', 'SNAP', 'CELH', 'HIMS', 'PINS', 'LYFT', 'RIVN',
+  'APP', 'AFRM', 'UPST', 'SOFI', 'SPOT', 'DUOL',
 ];
 // Universe criteria: major-exchange listed, ~$10B+ market cap, $50M+ avg daily dollar volume,
 // no OTC, no recent IPOs. Any future additions should meet this bar.
