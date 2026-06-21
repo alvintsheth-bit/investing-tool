@@ -68,7 +68,7 @@ DAILY  5:30 AM — scraper.js
                  • Logs to output/logs/scrape.log
 
 DAILY  5:55 AM — screener.js (pure code, no Claude — deterministic pre-filter)
-                 • Builds universe: 83 curated large/liquid tickers + AMC earnings (yesterday) + yesterday watchlist
+                 • Builds universe: 83 curated large/liquid tickers + after-market-close earnings (yesterday) + yesterday watchlist
                  • Fetches Yahoo Finance 5-min intraday bars (includePrePost=true) for every ticker
                  • Computes real gap% (pre-market price vs prior close) from 5-min bar closes
                  • RVOL = null (Yahoo returns volume=0 for all pre-market bars — not computable here)
@@ -370,7 +370,7 @@ screener.js (launchd job):
       RTX, UNH, ABBV, MCD, WMT, BIDU, JD, ACHR, ACMR, SPCX); added 15 high-beta
       catalysts (MARA, RIOT, AFRM, UPST, SOFI, RDDT, RIVN, SNAP, CELH, HIMS,
       PINS, LYFT, APP, SPOT, DUOL).)
-    • + AMC earnings from yesterday (FMP) — reported after yesterday's close,
+    • + after-market-close earnings from yesterday (FMP) — reported after yesterday's close,
         pre-market gap reflects overnight reaction. Phase 2 hard-excludes these
         from same-day trading; they surface for next-day watching only.
         BMO reporters are excluded — Phase 2 blocks them same-day anyway.
