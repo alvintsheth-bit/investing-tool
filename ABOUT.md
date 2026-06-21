@@ -110,7 +110,7 @@ DAILY 12:45 PM — agent.js force-close (pure code, no Claude — failsafe only)
 DAILY  1:00 PM — Market closes
 
 DAILY  1:30 PM — agent.js eod (Claude Haiku, 10 iterations)
-                 • Retrain logistic regression on all closed trades (60-trade min)
+                 • Retrain logistic regression on all closed trades (100-trade min)
                  • 80/20 blend new coefficients with yesterday's → signal-weights.json
                  • Walk-forward validation: this week vs last week accuracy
                  • Generate EOD report: P&L vs QQQ + learnings (2 sections only)
@@ -470,7 +470,7 @@ Sam's view provides context only — it does NOT change setup_score.
 
 ```
 setup_score =
-  IF 60+ completed trades exist:
+  IF 100+ completed trades exist:
     sigmoid(Σ coef_i × signal_i + bias)   ← logistic regression model
   ELSE:
     active_signals / 10                    ← equal-weight fallback
@@ -478,7 +478,7 @@ setup_score =
 setup_score → one of three buckets:
   ≥ 0.45           → attempt trade execution (Step 7)
                       ⚠️  TEMPORARY — lowered from 0.55 to bootstrap trade history.
-                      Will return to 0.55+ once logistic regression trains on 60+ real trades.
+                      Will return to 0.55+ once logistic regression trains on 100+ real trades.
   0.35 – 0.45      → log_rejected_candidate (shadow log) + save_tomorrow_watchlist
   < 0.35           → ignore — no logging
 ```
@@ -607,9 +607,9 @@ Early-close day?
 ### STEP 11 — EOD (1:30pm PT)
 
 ```
-Retrain logistic regression on all closed trades (if ≥ 60)
-├── < 60 trades → skip retraining, keep equal-weight fallback
-└── ≥ 60 trades → fit new coefficients, 80/20 blend with yesterday's weights
+Retrain logistic regression on all closed trades (if ≥ 100)
+├── < 100 trades → skip retraining, keep equal-weight fallback
+└── ≥ 100 trades → fit new coefficients, 80/20 blend with yesterday's weights
                    walk-forward validate: this week vs last week accuracy
                    save signal-weights.json
 
@@ -645,17 +645,19 @@ Any failures?
 
 ## 7. Signal Stack — 10 Day-Trading Signals
 
-All 10 signals feed a logistic regression model. Until 60 trades of history exist, equal-weight scoring is used (setup_score = active signals / 10).
+All 10 signals feed a logistic regression model. Until 100 trades of history exist, equal-weight scoring is used (setup_score = active signals / 10).
 
-### Primary Signals (day-trade specific)
+### Primary Signals (day-trade specific) — **HARD GATES**
 
-**`premarket_gap_up`** — Primary entry filter
+**`premarket_gap_up`** — Primary entry filter (HARD GATE)
 Gap >2% pre-market on elevated volume. Computed from Yahoo Finance `preMarketPrice` vs FMP previous close.
 Formula: `(preMarketPrice - prevClose) / prevClose * 100 > 2`
+**This signal must be `true` to trade — not just a scoring signal. If `false`, the trade is blocked in code regardless of setup_score.**
 
-**`rvol_spike`** — Relative Volume
+**`rvol_spike`** — Relative Volume (HARD GATE)
 Pre-market volume >2× the 30-day daily average × 0.08 (pre-market is ~8% of daily session).
 High RVOL = institutional activity, not retail noise.
+**This signal must be `true` to trade — not just a scoring signal. If `false`, the trade is blocked in code regardless of setup_score.**
 
 **`gap_likely_holds`** — Gap sustainability
 Fires `true` when gap >5%: historically the gap holds intraday (momentum continues).
@@ -702,14 +704,16 @@ Model-driven variable sizing (based on score confidence) is reserved until 200 l
 
 **Hard excludes (regardless of score):**
 - Earnings today before close
+- `premarket_gap_up = false` (code gate — no exceptions)
+- `rvol_spike = false` (code gate — no exceptions)
 - Past 10am PT entry window
 - Already at max concurrent positions (pilot: 1, full: 2)
 - 3 consecutive losses (paused for manual review)
 - Broker reconciliation mismatch
 
-**Fallback (< 60 trades):** Equal-weight — setup_score = active signal count / 10
+**Fallback (< 100 trades):** Equal-weight — setup_score = active signal count / 10
 
-**Variance check:** `trainModel()` warns if any signal feature has variance < 0.04, which indicates an entry filter is firing on nearly all candidates (model would learn nothing useful from that signal).
+**Variance filter:** `trainModel()` computes variance per feature before training. Features with variance < 0.04 are **excluded from gradient updates** (weight stays at 0) — not just warned. Features that are nearly always true (like `premarket_gap_up` on screener output) can't be informative and risk destabilising coefficients. Excluded features are logged and reported in `signal-weights.json` as `excludedFeatures`.
 
 ### Walk-Forward Validation
 At EOD, coefficients from this week are compared against last week on held-out trades. Accuracy reported in EOD email. New coefficients are 80/20 blended with prior day's to prevent overfitting.
@@ -873,12 +877,25 @@ Each closed trade has:
   "exitReason": "target hit",
   "signals": { "premarket_gap_up": true, "rvol_spike": true, ... },
   "setupScore": 0.68,
+  "catalystType": "earnings_beat",
+  "regime": {
+    "vixLevel": 16.4,
+    "vixBucket": "elevated",
+    "fearGreedScore": 58,
+    "fearGreedBucket": "greed",
+    "spyVs50dma": "above",
+    "qqqVs50dma": "above"
+  },
   "isLive": false,
   "maxFavorableExcursion": 1.8,
   "maxAdverseExcursion": -0.4
 }
 ```
 `rMultiple` = pnlPct / stopDistPct — measures outcome in units of risk taken. A +1R trade recovered the full stop distance in profit; -1R is a full stop-out. This is more informative than binary win/loss for model training and expectancy tracking.
+
+`catalystType` — classifies the primary driver of the gap. Used to slice edge by catalyst type after 100+ trades (e.g., "do earnings_beat gaps outperform analyst_upgrade gaps in our universe?"). 13 enum values: `earnings_beat | earnings_miss | guidance_raise | analyst_upgrade | fda_news | ma | insider_purchase | macro | sector_sympathy | notable_mention | product_launch | regulatory | technical`.
+
+`regime` — market regime snapshot at entry time. Populated from Phase 1 `get_fear_greed_vix` output. Used to slice edge by regime after 100+ trades (e.g., "do gap plays work in extreme fear vs greed environments?"). Fields: vixLevel, vixBucket, fearGreedScore, fearGreedBucket, spyVs50dma, qqqVs50dma.
 ```
 
 ### Shadow Logging (`rejected-candidates.json`)
@@ -891,7 +908,7 @@ Label: 1 if pnl > 0, else 0
 Method: L2-regularized logistic regression, pure JS gradient descent
   - 500 epochs, lr=0.05, λ=0.01
   - Blend: 80% yesterday's weights + 20% today's new fit
-  - Minimum 60 trades required (equal-weight fallback below)
+  - Minimum 100 trades required (equal-weight fallback below)
 ```
 
 ### Model Output (`signal-weights.json`)
