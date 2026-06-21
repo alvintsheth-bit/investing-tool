@@ -277,7 +277,9 @@ Scraped the entire site on first run. Handles complex interactive pages:
 **Max iterations:** 20 (analyze) / 10 (EOD) tool-use loops per session
 **Max tokens per response:** 8,192
 
-**Edge hypothesis:** Liquid stocks that gap ≥2% pre-market on a clear overnight catalyst (news, earnings surprise, notable mention) and whose gap is confirmed by elevated RVOL after the open tend to trend directionally through the first 90 minutes of the session — the edge is in identifying which catalyst types produce sustained intraday moves vs. gaps that fade within the opening 30 minutes.
+**Edge hypothesis:** Liquid stocks that gap ≥2% pre-market on a clear overnight catalyst (news, earnings surprise, notable mention) and whose gap is confirmed by RVOL >2× (checked pre-open via `get_premarket_data` in Phase 3, before market open) tend to trend directionally through the first 90 minutes of the session — the edge is in identifying which catalyst types produce sustained intraday moves vs. gaps that fade within the opening 30 minutes.
+
+Note on RVOL timing: RVOL is `null` at screener time (5:55am) because Yahoo Finance returns zero volume for pre-market bars. It becomes available when the agent calls `get_premarket_data` during Phase 3 (~6:00am), sourced from FMP `preMarketVolume` vs `averageVolume`. Entry decisions are made with RVOL confirmed — not before it's available.
 
 ### How the Agentic Loop Works
 
@@ -867,6 +869,7 @@ Each closed trade has:
   "decisionPrice": 205.00, "slippagePct": 0.09,
   "pnl": 15.60, "pnlPct": 1.56,
   "rMultiple": 0.62,
+  "catalystType": "earnings_beat",
   "exitReason": "target hit",
   "signals": { "premarket_gap_up": true, "rvol_spike": true, ... },
   "setupScore": 0.68,
@@ -875,7 +878,9 @@ Each closed trade has:
   "maxAdverseExcursion": -0.4
 }
 ```
-`rMultiple` = pnlPct / stopDistPct — measures outcome in units of risk taken. A +1R trade recovered the full stop distance in profit; -1R is a full stop-out. This is more informative than binary win/loss for model training and expectancy tracking.
+`rMultiple` = pnlPct / stopDistPct — measures outcome in units of risk taken. A +1R trade recovered the full stop distance in profit; -1R is a full stop-out. Training samples are weighted by |rMultiple| so high-R trades drive model updates more than marginal wins/losses.
+
+`catalystType` — one of 13 enum values: `earnings_beat | earnings_miss | guidance_raise | analyst_upgrade | fda_news | ma | insider_purchase | macro | sector_sympathy | notable_mention | product_launch | regulatory | technical`. Required on every trade. Enables catalyst-type P&L breakdown once enough trades accumulate.
 
 ### Shadow Logging (`rejected-candidates.json`)
 Candidates scoring 0.35–0.45 (below entry threshold) are logged via `log_rejected_candidate`. At EOD, their actual closing price is filled in for shadow P&L tracking — enables calibrating the threshold over time.
