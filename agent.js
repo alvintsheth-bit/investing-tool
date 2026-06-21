@@ -140,6 +140,9 @@ function loadTradesLog() {
 
 function recordClosedTrade(entry) {
   const log = loadTradesLog();
+  if (entry.entryTime && entry.exitTime) {
+    entry.timeInTradeMinutes = Math.round((new Date(entry.exitTime) - new Date(entry.entryTime)) / 60000);
+  }
   log.trades.push(entry);
   atomicWrite(TRADES_LOG_FILE, log);
 }

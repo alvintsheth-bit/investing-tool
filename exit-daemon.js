@@ -107,6 +107,9 @@ function recordClosedTrade(entry) {
   const log = existsSync(TRADES_LOG_FILE)
     ? JSON.parse(readFileSync(TRADES_LOG_FILE, 'utf-8'))
     : { trades: [] };
+  if (entry.entryTime && entry.exitTime) {
+    entry.timeInTradeMinutes = Math.round((new Date(entry.exitTime) - new Date(entry.entryTime)) / 60000);
+  }
   log.trades.push(entry);
   atomicWrite(TRADES_LOG_FILE, log);
 }

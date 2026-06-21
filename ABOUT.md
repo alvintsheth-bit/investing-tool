@@ -888,9 +888,12 @@ Each closed trade has:
   },
   "isLive": false,
   "maxFavorableExcursion": 1.8,
-  "maxAdverseExcursion": -0.4
+  "maxAdverseExcursion": -0.4,
+  "timeInTradeMinutes": 43
 }
 ```
+`timeInTradeMinutes` — minutes from entry fill to exit. Tests whether the edge hypothesis holds in the first 90 minutes: do winners resolve quickly, do slow trades fail more often, is there a "stale thesis" threshold?
+
 `rMultiple` = pnlPct / stopDistPct — measures outcome in units of risk taken. A +1R trade recovered the full stop distance in profit; -1R is a full stop-out. This is more informative than binary win/loss for model training and expectancy tracking.
 
 `catalystType` — classifies the primary driver of the gap. Used to slice edge by catalyst type after 100+ trades (e.g., "do earnings_beat gaps outperform analyst_upgrade gaps in our universe?"). 13 enum values: `earnings_beat | earnings_miss | guidance_raise | analyst_upgrade | fda_news | ma | insider_purchase | macro | sector_sympathy | notable_mention | product_launch | regulatory | technical`.
