@@ -1409,6 +1409,9 @@ Items are stacked: P1 = do now, P2 = after first 20 live trades, P3 = after firs
 | 5 | **Scan no-output alert** | If scan runs but Claude produces no trade and no recommendations file (tool_use loop exhausted), monitor doesn't distinguish "correct no-trade day" from "agent confused and produced nothing." |
 | 6 | **Deduplicate `TRADE_STATES`** | Defined in agent.js AND exit-daemon.js. Adding a state requires two edits. Extract to a shared constant or write exit-daemon to import from agent.js. |
 | 7 | **Deduplicate `transitionState` / `addStateHistory`** | Same function, different name, one in each file. Same problem as above. |
+| 15 | **Evaluate 6:31am analyze job timing** | Gemini: pre-bell market orders queue for open execution, hitting the widest spreads of the day. Strong-catalyst setups establish direction in the first 60 seconds — too early to delay pre-data. Revisit after 50 paper trades: if gap-and-crap (open at high, immediate reversal) appears repeatedly in `timeInTradeMinutes` data, delay the analyze job to 6:31am PT. |
+| 16 | **Signal ablation study at trade #100** | ChatGPT: after 100 trades, 2-3 signals will matter, 5-6 will do nothing, 1-2 may be harmful. Goal is elimination, not accumulation. Run ablation: compare model performance with each signal removed one at a time. Candidates likely to survive: RVOL, catalyst quality, sector strength. Candidates likely to drop: contrarian_social, insider_buying, analyst_conviction. |
+| 17 | **Catalyst × Regime pivot table at trade #100** | ChatGPT: produce two cross-tab reports — (1) Catalyst Type × Avg R and (2) Regime Bucket × Avg R. This is where real edge discovery happens. The data is now being collected; the analysis is deferred until the sample is meaningful. |
 
 ### P3 — Tech Debt / Refactor (after first profitable month)
 
@@ -1426,6 +1429,7 @@ Items are stacked: P1 = do now, P2 = after first 20 live trades, P3 = after firs
 | 12 | **SMS/push as secondary alert channel** | Gmail is the single alerting channel. If credentials expire or Gmail throttles, alerts are silent. Twilio SMS or Apple push as fallback. |
 | 13 | **Monthly/quarterly/annual P&L report** | weekly-report.js is built; monthly/quarterly/annual deferred until there's enough data (need 3+ months). |
 | 14 | **Sierra-style observability patterns** | Structured event emission, tiered health check severity (critical vs warning vs info), human escalation protocol. Only relevant if scaling to larger capital or multiple strategies. |
+| 18 | **Switch ML target from classification to R-multiple regression** | ChatGPT: the current binary win/loss label means a 70%-win-rate trade averaging +0.1R looks better than a 55%-win-rate trade averaging +1.2R. The thing worth predicting is expected R, not win probability. Partially mitigated by rMultiple sample weighting (implemented). Full fix: switch `trainModel()` to linear regression predicting expected R. Deferred until 200+ trades. |
 
 ---
 
