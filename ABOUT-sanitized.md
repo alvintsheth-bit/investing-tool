@@ -1,6 +1,6 @@
 # Personal Investing Agent — Full Technical Documentation
 
-**Owner:** Alvint Sheth (alvintsheth@gmail.com)
+**Owner:** [OWNER]
 **Built:** June 2026
 **Status:** Fully operational — Robinhood auth ✅ | Gmail email ✅ | Daily cron ✅ | Self-learning ✅ | Day-trade mode ✅ | DRY_RUN=true (paper trading until cycle verified)
 
@@ -40,9 +40,9 @@
 
 A fully automated personal **day-trading** agent that runs a complete intraday cycle — scan, monitor, force-close, report — without human intervention. It:
 
-- **Scrapes** sam-weiss.com daily at 5:30am for trade alerts, watchlist, and briefings. Rebuilds the full knowledge base every Sunday
+- **Scrapes** a paid financial advisory service daily at 5:30am for trade alerts, watchlist, and briefings. Rebuilds the full knowledge base every Sunday
 - **Scans** pre-market gappers at 6:00am (30 min before open), scoring candidates using a logistic regression model trained on historical signal outcomes
-- **Executes** fractional-share, dollar-denominated market orders on Robinhood's Agentic Trading sub-account (account 674082664) — pilot mode: 1 position max, 10% sizing; full mode: 2 positions, 17.5%
+- **Executes** fractional-share, dollar-denominated market orders on Robinhood's Agentic Trading sub-account — pilot mode: 1 position max, 10% sizing; full mode: 2 positions, 17.5%
 - **Monitors** open positions continuously via exit-daemon (45-second poll loop, 6:25am–1pm PT) — exits on stop/target hits or thesis-break events (Haiku judges borderline cases)
 - **Force-closes** all open positions at 12:45pm PT (failsafe only — daemon handles primary exits; early-close days: 9:45am)
 - **Trains** a logistic regression model at EOD on all closed trades (features: 10 signal binaries + continuous values, L2 regularized, 80/20 blended with prior day's weights)
@@ -57,14 +57,14 @@ The reasoning engine is Claude Sonnet 4.6 (scan) and Claude Haiku 4.5 (EOD + jud
 
 ```
 SUNDAY 5:00 AM — scraper-knowledge-base.js weekly
-                 • Scrapes last 10 briefings from sam-weiss.com
+                 • Scrapes last 10 briefings from advisory service
                  • Updates output/knowledge-base/briefings/
                  • Logs to output/logs/kb-weekly.log
 
 DAILY  5:30 AM — scraper.js
-                 • Authenticates to sam-weiss.com with Playwright
+                 • Authenticates to advisory service with Playwright
                  • Scrapes today's daily briefing, trade alerts, watchlist
-                 • Saves output/sam-weiss-YYYY-MM-DD.json
+                 • Saves output/advisor-YYYY-MM-DD.json
                  • Logs to output/logs/scrape.log
 
 DAILY  5:55 AM — screener.js (pure code, no Claude — deterministic pre-filter)
@@ -83,7 +83,7 @@ DAILY  6:00 AM — agent.js scan (30 min before open, Claude Sonnet, 20 iteratio
                  • Phase 2: Earnings calendar — build hard exclude list for today
                  • Phase 3: Research screener candidates in ranked order — news catalyst,
                  •           Reddit chatter, notable mentions, insider activity, ATR stop/target
-                 • Phase 4: Sam validation per ticker (briefing search + outlook on demand)
+                 • Phase 4: Advisor validation per ticker (briefing search + outlook on demand)
                  • Phase 5: Execute if setup_score ≥ 0.45, log to trades-open.json
                  •           Shadow-log candidates scoring 0.35–0.45 via log_rejected_candidate
                  • Entry window: 6:00–10:00am PT only. LONG ONLY — no short positions.
@@ -117,13 +117,13 @@ DAILY  1:30 PM — agent.js eod (Claude Haiku, 10 iterations)
                  • Compute expectancy, profit factor, win rate → expectancy-log.json
                  • Update rejected candidates with EOD prices (shadow P&L tracking)
                  • Save tomorrow's watchlist (gap candidates to re-screen)
-                 • Email to alvintsheth@gmail.com
+                 • Email report to [OWNER_EMAIL]
                  • Logs to output/logs/eod.log
 
 DAILY  2:15 PM — monitor.js (health check — no Claude, no cost)
                  • Verifies screener, scrape, recommendations, EOD report, daemon log all exist
                  • Checks trades-open.json is empty (positions cleared)
-                 • Alerts alvintsheth@gmail.com if anything is wrong
+                 • Alerts [OWNER_EMAIL] if anything is wrong
 ```
 
 ---
@@ -164,7 +164,7 @@ DAILY  2:15 PM — monitor.js (health check — no Claude, no cost)
    │  • Sector rotation (11 ETFs)              │
    │  • Web search for candidates              │
    │  • 10 signals per ticker                  │
-   │  • Sam Weiss validation (last)            │
+   │  • Advisor validation (last)              │
    └──┬────────────────────────────┬───────────┘
       │                            │
   ┌───▼──────┐            ┌────────▼──────────┐
@@ -173,7 +173,7 @@ DAILY  2:15 PM — monitor.js (health check — no Claude, no cost)
   │  Sources │            │  agent.robinhood  │
   │  (below) │            │  .com/mcp/trading │
   └──────────┘            │  Agentic account  │
-                          │  674082664        │
+                          │  [ACCOUNT_NUMBER] │
                           └──────────────────┘
                                    │
                           ┌────────▼──────────┐
@@ -206,16 +206,16 @@ DAILY  2:15 PM — monitor.js (health check — no Claude, no cost)
 - Human-like delays (`humanDelay()`: 800-2500ms between actions) to avoid bot detection
 - Authenticated session: logs in once, reuses across all pages
 - `networkidle` wait strategy + 300ms buffer after page load
-- Credentials: `SAM_WEISS_USERNAME` + `SAM_WEISS_PASSWORD` in `.env`
+- Credentials: `ADVISOR_USERNAME` + `ADVISOR_PASSWORD` in `.env`
 
 ### Daily Scraper (`scraper.js`) — 5:30am
 Scrapes 4 pages each morning, saves timestamped JSON:
 1. Latest daily briefing (homepage)
 2. Current trade alerts (`/trades/`)
-3. Watchlist — stocks Sam is monitoring (`/trade-watch/`)
-4. All 9 portfolio pages (Targaryen, Baratheon, Lannister, Tyrell, Arryn, Tarly, Stark, Frey, Hightower)
+3. Watchlist — stocks the advisor is monitoring (`/trade-watch/`)
+4. All 9 portfolio pages (named after Game of Thrones houses)
 
-Output: `output/sam-weiss-YYYY-MM-DD.json`
+Output: `output/advisor-YYYY-MM-DD.json`
 
 ### Weekly KB Updater (`scraper-knowledge-base.js weekly`) — Sundays 5am
 Pulls the last 10 briefings and saves them to `output/knowledge-base/briefings/`. Keeps the knowledge base current without re-scraping the entire 535-briefing archive weekly.
@@ -250,15 +250,15 @@ Scraped the entire site on first run. Handles complex interactive pages:
 
 | File | Size | Contents |
 |------|------|----------|
-| `strategy.md` | 42KB | Sam's 4-Part Investment Framework: buy corrections, hedge rallies, sell covered calls, hold long-term. All 6 strategy tabs. |
+| `strategy.md` | 42KB | Advisor's 4-Part Investment Framework: buy corrections, hedge rallies, sell covered calls, hold long-term. All 6 strategy tabs. |
 | `investing-basics.md` | 299KB | All 6 chapters with all slides: The Basics, Inherent Leverage, Risk Management, Brokerage, Practical Application, Advanced |
 | `market-outlook.md` | 44KB | Near-term, intermediate-term, long-term forecasts. All collapsible sections expanded. |
 | `market-understanding.md` | 14KB | "Understanding the Market" slide deck |
 | `nasdaq-historical.md` | 28KB | Correction/rally data tables 2007–2025: %, duration, context |
-| `trade-history.md` | 77KB | Complete history of all trades Sam has ever made |
+| `trade-history.md` | 77KB | Complete history of all trades the advisor has ever made |
 | `trade-watchlist.md` | 2KB | Current watchlist |
 | `portfolio-overview.md` | 24KB | Aggregate portfolio performance |
-| `portfolios/` | 9 files | Targaryen, Baratheon, Lannister, Tyrell, Arryn, Tarly, Stark, Frey, Hightower |
+| `portfolios/` | 9 files | 9 portfolio pages |
 | `articles/` | 12 files | Long-form strategy articles, stress tests, monthly outlooks |
 
 ### Dynamic Content (updated daily/weekly)
@@ -266,7 +266,7 @@ Scraped the entire site on first run. Handles complex interactive pages:
 | File | Source | Contents |
 |------|--------|----------|
 | `briefings/YYYY-MM-DD-*.md` | Weekly cron (Sundays 5am) | 535+ daily briefings with comments, 18+ months |
-| `output/sam-weiss-YYYY-MM-DD.json` | Daily cron (6am) | Today's briefing, trade alerts, watchlist, portfolio snapshot |
+| `output/advisor-YYYY-MM-DD.json` | Daily cron (6am) | Today's briefing, trade alerts, watchlist, portfolio snapshot |
 
 ---
 
@@ -294,7 +294,7 @@ Scraped the entire site on first run. Handles complex interactive pages:
 
 ### Context Injected at Prompt Time
 
-Only factual, non-narrative data is pre-loaded. All Sam content is deliberately excluded from the initial context — the agent cannot have absorbed any of Sam's current views before starting its own research.
+Only factual, non-narrative data is pre-loaded. All advisor content is deliberately excluded from the initial context — the agent cannot have absorbed any of the advisor's current views before starting its own research.
 
 | Content | Chars | Source |
 |---------|-------|--------|
@@ -304,15 +304,15 @@ Only factual, non-narrative data is pre-loaded. All Sam content is deliberately 
 | NASDAQ correction/rally patterns | 3,000 | nasdaq-historical.md (historical data) |
 
 **What is NOT pre-loaded (to prevent anchoring):**
-- Sam's daily briefing narrative → available via `get_sam_market_outlook` tool on demand
-- Recent briefings → available via `search_sam_weiss_briefings` tool on demand
-- Market outlook → available via `get_sam_market_outlook` tool on demand
-- Portfolio positions → available via `get_sam_market_outlook` tool on demand
-- Strategy/investing-basics → available via `get_sam_market_outlook` tool on demand
-- Today's trade alerts (what Sam bought/sold) → not pre-loaded; agent discovers candidates independently first
-- Today's watchlist (what Sam is monitoring) → not pre-loaded; prevents Sam's picks from anchoring tomorrow's watchlist
+- Advisor's daily briefing narrative → available via `get_advisor_market_outlook` tool on demand
+- Recent briefings → available via `search_advisor_briefings` tool on demand
+- Market outlook → available via `get_advisor_market_outlook` tool on demand
+- Portfolio positions → available via `get_advisor_market_outlook` tool on demand
+- Strategy/investing-basics → available via `get_advisor_market_outlook` tool on demand
+- Today's trade alerts (what advisor bought/sold) → not pre-loaded; agent discovers candidates independently first
+- Today's watchlist (what advisor is monitoring) → not pre-loaded; prevents advisor's picks from anchoring tomorrow's watchlist
 
-Sam's data enters only via explicit tool calls in Phase 4, after the agent has independently scored each candidate. This ensures tomorrow's watchlist is driven by gap%/sector signals — not by what Sam is watching.
+Advisor's data enters only via explicit tool calls in Phase 4, after the agent has independently scored each candidate. This ensures tomorrow's watchlist is driven by gap%/sector signals — not by what the advisor is watching.
 
 ### API Resilience — 5xx Retry
 
@@ -327,10 +327,10 @@ This prevents the scan from failing mid-run due to transient Anthropic server er
 ### Research Philosophy (Embedded in Prompt)
 The agent is explicitly instructed:
 1. Do independent market research first — macro, sectors, technicals, news, sentiment
-2. Discover candidate stocks from web search and signals BEFORE reading Sam's view
-3. Score candidates using 10 independent signals (Sam NOT included)
-4. THEN consult Sam: his stance adjusts position size (full/standard/small) but not score
-5. Execute if setup_score ≥0.45 — Sam's stance provides context; model-driven sizing only after 200 live trades
+2. Discover candidate stocks from web search and signals BEFORE reading advisor's view
+3. Score candidates using 10 independent signals (advisor NOT included)
+4. THEN consult advisor: stance adjusts position size (full/standard/small) but not score
+5. Execute if setup_score ≥0.45 — advisor's stance provides context; model-driven sizing only after 200 live trades
 
 ### Modes
 - `node agent.js` — analyze + trade (6:00am)
@@ -452,14 +452,14 @@ For each candidate (in ranked order):
 
 ---
 
-### STEP 5 — Phase 4: Sam Validation (only for candidates that passed Step 4)
+### STEP 5 — Phase 4: Advisor Validation (only for candidates that passed Step 4)
 
 ```
 For each candidate that cleared gap + RVOL filters:
-  search_sam_weiss_briefings(ticker) → Sam's historical stance on this ticker
-  get_sam_market_outlook()           → macro framework (called at most once per session)
+  search_advisor_briefings(ticker) → advisor's historical stance on this ticker
+  get_advisor_market_outlook()     → macro framework (called at most once per session)
 
-Sam's view provides context only — it does NOT change setup_score.
+Advisor's view provides context only — it does NOT change setup_score.
 ```
 
 ---
@@ -618,7 +618,7 @@ Generate EOD report (Haiku):
 
 Update rejected-candidates.json with EOD prices (shadow P&L)
 Append to expectancy-log.json (win rate, expectancy, profit factor)
-Email report to alvintsheth@gmail.com
+Email report to [OWNER_EMAIL]
 ```
 
 ---
@@ -627,7 +627,7 @@ Email report to alvintsheth@gmail.com
 
 ```
 For each check:
-  sam-weiss-{today}.json exists?         → ✅ / ❌ scraper failure
+  advisor-{today}.json exists?           → ✅ / ❌ scraper failure
   recommendations-{today}.md exists?    → ✅ / ❌ scan agent crashed
   eod-report-{today}.md exists?         → ✅ / ❌ EOD agent crashed
   trades-open.json has 0 positions?     → ✅ / ❌ force-close failed (CHECK ROBINHOOD)
@@ -677,8 +677,8 @@ Derived from NASDAQ historical patterns in `output/knowledge-base/nasdaq-histori
 
 **`analyst_conviction`** — 2+ recent analyst upgrades or significant price target raise in the last 30 days.
 
-### Sam Weiss (validation lens, not a signal)
-`search_sam_weiss_briefings(ticker)` and `get_sam_market_outlook` are available after independent research. Sam's stance does NOT change setup_score — it informs position context.
+### Advisor (validation lens, not a signal)
+`search_advisor_briefings(ticker)` and `get_advisor_market_outlook` are available after independent research. Advisor's stance does NOT change setup_score — it informs position context.
 
 ---
 
@@ -765,12 +765,12 @@ Each trade gets a dedicated markdown file documenting:
 - **Position parameters** — entry, target, stop loss, expected max gain/loss
 - **Catalyst timeline** — when the thesis should play out
 - **Market context** — VIX, Fear & Greed, sector performance at time of trade
-- **Sam Weiss alignment** — his explicit stance and framework guidance
+- **Advisor alignment** — explicit stance and framework guidance
 - **Technical snapshot** — RSI, 52W position, MA50/200, volume
 - **All 10 signal verdicts** — ✅ or ❌ for each signal
 - **Stop/target levels** — ATR-14 at entry; opening-range stop updated after 6:45am PT if OR low is tighter (never loosens); immediate exit if price already below new OR stop when check fires
 - **Fill price confirmation** — live mode polls broker post-order for actual fill; slippage always logged, warning at >2%
-- **Slippage gate (item 36, implemented)** — if fill slippage exceeds 50% of the stop distance, the position is immediately exited and recorded as closed. Rationale: a fill that eats more than half the stop means the thesis is already compromised before the first bar prints.
+- **Slippage gate (implemented)** — if fill slippage exceeds 50% of the stop distance, the position is immediately exited and recorded as closed. Rationale: a fill that eats more than half the stop means the thesis is already compromised before the first bar prints.
 - **Order state machine** — every trade tracks explicit states with timestamps:
   `CANDIDATE → ORDER_SUBMITTED → ORDER_PENDING → FILLED → PROTECTED → EXIT_PENDING → CLOSED`
   Stop/target only enforced once `PROTECTED`. Entry slippage computed at `FILLED` state from confirmed fill price.
@@ -847,7 +847,6 @@ Stop enforced by exit-daemon polling every 45 seconds — no 90-minute gap risk.
 - Pure code, no Claude, no exceptions.
 
 ### Robinhood Account
-- Account number: 674082664
 - Type: Agentic trading sub-account (`agentic_allowed: true`)
 - All orders: market orders (GFD — good for day)
 - Fractional shares: supported (dollar-denominated)
@@ -877,7 +876,6 @@ Each closed trade has:
 }
 ```
 `rMultiple` = pnlPct / stopDistPct — measures outcome in units of risk taken. A +1R trade recovered the full stop distance in profit; -1R is a full stop-out. This is more informative than binary win/loss for model training and expectancy tracking.
-```
 
 ### Shadow Logging (`rejected-candidates.json`)
 Candidates scoring 0.35–0.45 (below entry threshold) are logged via `log_rejected_candidate`. At EOD, their actual closing price is filled in for shadow P&L tracking — enables calibrating the threshold over time.
@@ -1001,7 +999,7 @@ Token auto-refreshes when expired (259-hour lifetime).
 Robinhood MCP returns `text/event-stream` format, not JSON. The `rhPost()` function detects `content-type: event-stream` and parses `data: {json}` lines.
 
 ### Account Selection
-`rhGetAccountNumber()` calls `get_accounts` and prefers `agentic_allowed: true` accounts (sub-account 674082664) over the default account.
+`rhGetAccountNumber()` calls `get_accounts` and prefers `agentic_allowed: true` accounts (agentic sub-account) over the default account.
 
 ### MCP Tools Used
 | Tool | Purpose |
@@ -1018,7 +1016,7 @@ Robinhood MCP returns `text/event-stream` format, not JSON. The `rhPost()` funct
 
 **Command:** `node agent.js eod`
 **Output:** `output/eod-report-YYYY-MM-DD.md`
-**Email:** `alvintsheth@gmail.com` via nodemailer + Gmail App Password
+**Email:** `[OWNER_EMAIL]` via nodemailer + Gmail App Password
 
 ### Report Contents
 1. **P&L Summary** — per trade: entry vs exit price, P&L $ and %, vs SPY/QQQ/IWM same-day benchmarks
@@ -1031,7 +1029,7 @@ Each EOD run appends: win rate, avg win $, avg loss $, expectancy ($/trade), pro
 
 ### Gmail Configuration
 ```
-GMAIL_USER=alvintsheth@gmail.com
+GMAIL_USER=[OWNER_EMAIL]
 GMAIL_APP_PASSWORD=[16-char Google App Password]  (not your account password)
 ```
 Uses `nodemailer` with Gmail SMTP (`smtp.gmail.com:587`). App password generated at myaccount.google.com → Security → 2-Step Verification → App passwords.
@@ -1043,7 +1041,7 @@ Uses `nodemailer` with Gmail SMTP (`smtp.gmail.com:587`). App password generated
 **Schedule:** Sundays 5:30pm PT via launchd
 **File:** `weekly-report.js`
 **Cost:** $0 — pure code, no Claude API calls
-**Output:** Email to `alvintsheth@gmail.com`; logs to `output/logs/weekly-report.log`
+**Output:** Email to `[OWNER_EMAIL]`; logs to `output/logs/weekly-report.log`
 
 Runs every Sunday evening and summarizes the Mon–Fri week just completed.
 
@@ -1134,7 +1132,7 @@ launchctl start com.investing-tool.kb-weekly
 ### Node.js Path
 The nvm-managed Node is hardcoded in all plists:
 ```
-/Users/alvintsheth/.nvm/versions/node/v22.22.3/bin/node
+/Users/[user]/.nvm/versions/node/v22.22.3/bin/node
 ```
 
 ---
@@ -1150,7 +1148,7 @@ Runs 7 checks every trading day and sends a failure email if anything is wrong:
 | Check | Pass condition | Failure means |
 |-------|---------------|---------------|
 | Screener | `screener-{today}.json` exists | screener crashed — agent had no candidates |
-| Scrape | `sam-weiss-{today}.json` exists | scraper crashed or never ran |
+| Scrape | `advisor-{today}.json` exists | scraper crashed or never ran |
 | Scan | `recommendations-{today}.md` exists | scan agent crashed |
 | EOD | `eod-report-{today}.md` exists | EOD agent crashed |
 | Positions cleared | `trades-open.json` has 0 entries | force-close failed to close something — **check Robinhood immediately** |
@@ -1183,12 +1181,13 @@ investing-tool/
 ├── package.json                      # Node.js project config (ESM)
 ├── .env                              # API keys and credentials (gitignored)
 ├── .gitignore                        # Excludes .env, node_modules, output/, screenshots/
-├── ABOUT.md                          # This document
+├── ABOUT.md                          # Full documentation (contains owner details — do not share)
+├── ABOUT-sanitized.md                # Sanitized version for sharing / LLM feedback
 │
 ├── node_modules/                     # Dependencies
 │
 ├── output/
-│   ├── sam-weiss-YYYY-MM-DD.json    # Daily scrape (6am)
+│   ├── advisor-YYYY-MM-DD.json      # Daily scrape (6am)
 │   ├── recommendations-YYYY-MM-DD.md # Agent's analysis + trade decisions
 │   ├── eod-report-YYYY-MM-DD.md     # EOD P&L + learnings
 │   ├── trades-log.json              # All closed trades (used for model training)
@@ -1202,7 +1201,6 @@ investing-tool/
 │   │
 │   ├── trades/                      # Per-trade rationale files
 │   │   ├── 2026-06-14-NVDA-buy.md  # Entry data, signals, setup_score, exit outcome
-│   │   ├── 2026-06-14-NVDA-buy-DRY.json  # Dry-run order log (when DRY_RUN=true)
 │   │   └── ...
 │   │
 │   ├── logs/
@@ -1215,7 +1213,7 @@ investing-tool/
 │   │   └── kb-weekly.log            # Sunday KB update
 │   │
 │   └── knowledge-base/
-│       ├── strategy.md              # 42KB — Sam's 4-part framework
+│       ├── strategy.md              # 42KB — advisor's 4-part framework
 │       ├── investing-basics.md      # 299KB — 6 chapters all slides
 │       ├── market-outlook.md        # 44KB — near/intermediate/long-term
 │       ├── market-understanding.md  # 14KB
@@ -1229,22 +1227,10 @@ investing-tool/
 │       │   └── YYYY-MM-DD-slug.md   # Full briefing + reader comments
 │       │
 │       ├── portfolios/              # 9 portfolio pages
-│       │   ├── targaryen.md
-│       │   ├── baratheon.md
-│       │   ├── lannister.md
-│       │   ├── tyrell.md
-│       │   ├── arryn.md
-│       │   ├── tarly.md
-│       │   ├── stark.md
-│       │   ├── frey.md
-│       │   └── hightower.md
 │       │
 │       ├── articles/                # 12 long-form articles
-│       │   └── 001-*.md ... 012-*.md
 │       │
 │       └── stocks/                  # Individual stock pages (limited)
-│           ├── NVDA.md
-│           └── AAPL.md
 │
 └── screenshots/                     # Debug screenshots (gitignored)
 ```
@@ -1256,9 +1242,9 @@ investing-tool/
 **File:** `.env` (gitignored — NEVER commit this file)
 
 ```bash
-# Sam Weiss subscription credentials
-SAM_WEISS_USERNAME=alvintsheth@gmail.com
-SAM_WEISS_PASSWORD=[password]
+# Financial advisory service credentials
+ADVISOR_USERNAME=[email]
+ADVISOR_PASSWORD=[password]
 
 # Financial Modeling Prep — free stable tier
 FMP_API_KEY=[key]
@@ -1267,7 +1253,7 @@ FMP_API_KEY=[key]
 ANTHROPIC_API_KEY=[key]  # Rotate at console.anthropic.com if exposed
 
 # Gmail (nodemailer App Password)
-GMAIL_USER=alvintsheth@gmail.com
+GMAIL_USER=[owner email]
 GMAIL_APP_PASSWORD=[app password]
 
 # Robinhood OAuth (generated by robinhood-auth.js)
@@ -1292,7 +1278,7 @@ npx playwright install chromium
 
 ### Daily Usage (these run automatically via cron — manual override below)
 ```bash
-npm run scrape        # 5:30am — scrape today's sam-weiss.com data
+npm run scrape        # 5:30am — scrape today's advisor data
 npm run scan          # 6:00am — day trade scan + execute (alias: npm run analyze)
 npm run exit-daemon   # 6:25am — start exit monitor (runs until ~1pm)
 npm run force-close   # 12:45pm — failsafe close all positions
@@ -1327,7 +1313,7 @@ node robinhood-auth.js   # Authenticate Robinhood MCP
 | Config | dotenv ^16.4.5 |
 | HTTP | Node.js native `fetch` (built-in since Node 18) |
 | Email | nodemailer ^8.0.11 + Gmail SMTP |
-| Scheduling | macOS launchd (7 jobs: scrape, scan, exit-daemon, force-close, eod, monitor, kb-weekly) |
+| Scheduling | macOS launchd (8 jobs: scrape, scan, exit-daemon, force-close, eod, monitor, kb-weekly, weekly-report) |
 | Trade execution | Robinhood Agentic Trading MCP (HTTP transport) |
 
 ### Model Selection by Task
@@ -1338,7 +1324,7 @@ node robinhood-auth.js   # Authenticate Robinhood MCP
 Started with Playwright (Node ecosystem) + Anthropic SDK. Node's native `fetch` handles all HTTP. ESM is the modern standard.
 
 ### Why Playwright over Cheerio/Puppeteer?
-Sam's site is WordPress with JavaScript-rendered dropdowns, tabs, and slides. Static parsers can't handle this. Playwright's `networkidle` + `page.evaluate()` handles all interactive elements.
+The advisory site is WordPress with JavaScript-rendered dropdowns, tabs, and slides. Static parsers can't handle this. Playwright's `networkidle` + `page.evaluate()` handles all interactive elements.
 
 ---
 
@@ -1346,7 +1332,7 @@ Sam's site is WordPress with JavaScript-rendered dropdowns, tabs, and slides. St
 
 | Service | Cost | Auth | Purpose |
 |---------|------|------|---------|
-| sam-weiss.com | Paid subscription | Username/password (Playwright) | Primary investing intelligence, 535+ briefings |
+| Financial advisory service | Paid subscription | Username/password (Playwright) | Primary investing intelligence, 535+ briefings |
 | Financial Modeling Prep (stable tier) | Free | API key | Stock quotes, profiles, historical prices, key metrics |
 | Yahoo Finance chart API | Free | None (User-Agent) | ETF quotes (QQQ, SPY, IWM, sector ETFs) |
 | US Treasury | Free | None | Daily yield curve XML |
@@ -1367,9 +1353,9 @@ The agent uses **Claude Sonnet 4.6** (analyze) and **Claude Haiku 4.5** (EOD) �
 ### Why Each Run Is Expensive
 
 **Current architecture (optimized):**
-- Initial prompt: ~5,000 chars (NASDAQ patterns + learning memory only — no Sam content pre-loaded)
+- Initial prompt: ~5,000 chars (NASDAQ patterns + learning memory only — no advisor content pre-loaded)
 - No briefings, no outlook, no portfolio positions, no trade alerts, no watchlist pre-loaded — all tool-gated
-- Sam's content only enters context when the agent explicitly calls `get_sam_market_outlook` or `search_sam_weiss_briefings` in Phase 4
+- Advisor's content only enters context when the agent explicitly calls `get_advisor_market_outlook` or `search_advisor_briefings` in Phase 4
 
 **Cost estimate per session (current):**
 - Analyze run (Sonnet, 20 iter max): ~30k tokens → ~$0.45
@@ -1377,7 +1363,7 @@ The agent uses **Claude Sonnet 4.6** (analyze) and **Claude Haiku 4.5** (EOD) �
 - **~$0.51/day total** for both runs
 - **~$15/month**
 
-**Why this is also architecturally better:** Briefings in the initial context = the agent has absorbed Sam's current narrative before its first thought. That's not independent research — it's anchored research. Tool-gating Sam's content enforces the "market first, Sam second" discipline at a structural level, not just as a prompt instruction.
+**Why this is also architecturally better:** Briefings in the initial context = the agent has absorbed the advisor's current narrative before its first thought. That's not independent research — it's anchored research. Tool-gating the advisor's content enforces the "market first, advisor second" discipline at a structural level, not just as a prompt instruction.
 
 ---
 
@@ -1391,7 +1377,7 @@ Items are stacked: P1 = do now, P2 = after first 20 live trades, P3 = after firs
 |---|------|-----|
 | 1 | **Broker state reconciliation at startup** | If agent.js crashes between ORDER_SUBMITTED and FILLED, `trades-open.json` can show a phantom position. On next run, compare local state to Robinhood portfolio and alert/resolve divergence. |
 | 2 | **Remove dead `runCheck()` function** | 100 lines of dead code in agent.js — no plist calls it, exit-daemon replaced it. Confuses future debugging. Low risk to remove. |
-| 3 | **Fix `runCheck()` UTC/PT timezone bug (before re-enabling)** | If check mode is ever re-enabled, line 1660 computes PT time from UTC with a hardcoded offset that's wrong in winter (PST vs PDT). Use `Intl.DateTimeFormat` like the rest of the codebase. |
+| 3 | **Fix `runCheck()` UTC/PT timezone bug (before re-enabling)** | If check mode is ever re-enabled, the PT time computation uses a hardcoded offset that's wrong in winter (PST vs PDT). Use `Intl.DateTimeFormat` like the rest of the codebase. |
 
 ### P2 — Operations (after 20 live trades)
 
@@ -1406,15 +1392,15 @@ Items are stacked: P1 = do now, P2 = after first 20 live trades, P3 = after firs
 
 | # | Item | Why |
 |---|------|-----|
-| 8 | **Split agent.js (1966 lines) into modules** | Current file handles: scan prompts, EOD prompts, tool definitions, tool execution, Yahoo/FMP fetching, Robinhood orders, logistic regression, email, circuit breaker, state machine. Each "item" was bolted on rather than placed in the right module. Split into `lib/broker.js`, `lib/market-data.js`, `lib/positions.js`, mode files. |
-| 9 | **Deduplicate market calendar** | Still 3 copies of the holiday set across agent.js, exit-daemon.js, monitor.js. A shared `lib/calendar.js` eliminates the update problem. |
+| 8 | **Split agent.js (~2000 lines) into modules** | Current file handles: scan prompts, EOD prompts, tool definitions, tool execution, Yahoo/FMP fetching, Robinhood orders, logistic regression, email, circuit breaker, state machine. Split into `lib/broker.js`, `lib/market-data.js`, `lib/positions.js`, mode files. |
+| 9 | **Deduplicate market calendar** | 3 copies of the holiday set across agent.js, exit-daemon.js, monitor.js. A shared `lib/calendar.js` eliminates the update problem. |
 | 10 | **Add 2028 market holidays** | 2027 holidays added; 2028 NYSE calendar typically confirmed by Oct 2027. |
 
 ### P4 — Nice-to-Have (if/when scaling capital)
 
 | # | Item | Why |
 |---|------|-----|
-| 11 | ~~**Slippage threshold (Item 36)**~~ | **Done.** Slippage gate implemented: exit immediately if fill slippage > 50% of stop distance. Remaining future work: auto-calibrate the 50% threshold from observed live fills. |
+| 11 | ~~**Slippage threshold**~~ | **Done.** Slippage gate implemented: exit immediately if fill slippage > 50% of stop distance. Future work: auto-calibrate the 50% threshold from observed live fills. |
 | 12 | **SMS/push as secondary alert channel** | Gmail is the single alerting channel. If credentials expire or Gmail throttles, alerts are silent. Twilio SMS or Apple push as fallback. |
 | 13 | **Monthly/quarterly/annual P&L report** | weekly-report.js is built; monthly/quarterly/annual deferred until there's enough data (need 3+ months). |
 | 14 | **Sierra-style observability patterns** | Structured event emission, tiered health check severity (critical vs warning vs info), human escalation protocol. Only relevant if scaling to larger capital or multiple strategies. |
@@ -1427,10 +1413,10 @@ Design decisions that were changed, and the reasoning behind each removal. Kept 
 
 ### Web search candidate discovery (removed June 2026)
 
-**What it was:** Phase 2 of the scan prompt told the agent to run `web_search("pre-market gappers today YYYY-MM-DD volume")` and `web_search("top stock movers today YYYY-MM-DD pre-market")` to discover which stocks to research.
+**What it was:** Phase 2 of the scan prompt told the agent to run `web_search("pre-market gappers today YYYY-MM-DD volume")` to discover which stocks to research.
 
 **Why it was removed:** Three compounding problems:
-1. DuckDuckGo results are article-based and often hours stale by 6am PT. The "top gappers" article from 5am may already be outdated.
+1. DuckDuckGo results are article-based and often hours stale by 6am PT.
 2. The agent had no fixed universe — it researched whatever the LLM decided looked interesting from search snippets. Different tickers every day, no consistency.
 3. The real discovery question ("what is moving right now?") is a data question, not a search question. Yahoo 5-min intraday bars answer it deterministically.
 
@@ -1438,35 +1424,35 @@ Design decisions that were changed, and the reasoning behind each removal. Kept 
 
 ---
 
-### Sam Weiss watchlist and trade alerts in scan prompt (removed June 2026)
+### Advisor watchlist and trade alerts in scan prompt (removed June 2026)
 
-**What it was:** The scan prompt injected Sam's current watchlist (what he's monitoring) and trade alerts (what he bought/sold that day) directly into the system prompt context before the agent began research.
+**What it was:** The scan prompt injected the advisor's current watchlist and trade alerts directly into the system prompt context before the agent began research.
 
-**Why it was removed:** The agent could see Sam's watchlist from token 0, before running any independent research. This anchored candidate discovery — tickers Sam was watching naturally appeared on tomorrow's watchlist regardless of independent signal quality. The intent was always for Sam to be a Phase 4 validation layer; pre-loading his watchlist undermined that at a structural level.
+**Why it was removed:** The agent could see the advisor's watchlist from token 0, before running any independent research. This anchored candidate discovery — tickers the advisor was watching naturally appeared on tomorrow's watchlist regardless of independent signal quality.
 
-**What replaced it:** Sam's data enters only via explicit tool calls in Phase 4 (`search_sam_weiss_briefings`, `get_sam_market_outlook`) after the agent has independently scored each screener candidate.
+**What replaced it:** Advisor data enters only via explicit tool calls in Phase 4 after the agent has independently scored each screener candidate.
 
 ---
 
-### Sam macro stance as session veto (fixed June 2026)
+### Advisor macro stance as session veto (fixed June 2026)
 
-**What it was:** The prompt said "Sam validation" but didn't prevent the agent from using Sam's macro positioning (e.g., "Sam is buying QQQ puts") as a reason to stand down for the entire session — even when individual setups had valid scores.
+**What it was:** The prompt said "advisor validation" but didn't prevent the agent from using the advisor's macro positioning as a reason to stand down for the entire session — even when individual setups had valid scores.
 
-**Why it was wrong:** Sam runs long-dated options positions (months to years). His portfolio hedges reflect multi-month macro views, not intraday momentum. An agent standing down because "Sam is hedging" is conflating time horizons. A stock gapping 3% on a product launch is a valid day trade regardless of Sam's QQQ puts.
+**Why it was wrong:** The advisor runs long-dated options positions (months to years). His portfolio hedges reflect multi-month macro views, not intraday momentum. An agent standing down because "the advisor is hedging" is conflating time horizons.
 
-**What was added:** Explicit hard rules in the prompt: Sam's macro stance cannot block a trade, cannot veto a session, and cannot change `setup_score`. His view on a specific ticker is context only.
+**What was added:** Explicit hard rules: advisor's macro stance cannot block a trade, cannot veto a session, and cannot change `setup_score`. His view on a specific ticker is context only.
 
 ---
 
 ### Short selling (removed June 2026)
 
-**What it was:** The scan prompt allowed the agent to identify short setups (e.g., "XLE short — gap down >2%") and add them to the watchlist.
+**What it was:** The scan prompt allowed the agent to identify short setups.
 
-**Why it was removed:** Robinhood retail accounts don't support shorting stock. The agent was producing short setups that could never execute, wasting research iterations on them. The system is long-only.
+**Why it was removed:** Robinhood retail accounts don't support shorting stock. The agent was producing short setups that could never execute, wasting research iterations on them.
 
 **What replaced it:** "LONG ONLY — no short positions under any circumstances" added to the hard rules section of the scan prompt.
 
 ---
 
 *Last updated: June 2026*
-*Built by Alvint Sheth using Claude Code*
+*Built using Claude Code*
