@@ -732,7 +732,9 @@ async function getPreMarketData(ticker) {
 
 async function getQuote(ticker) {
   const d = await fmp(`quote?symbol=${ticker}`);
-  return Array.isArray(d) ? d[0] || null : null;
+  if (Array.isArray(d) && d[0]) return d[0];
+  // FMP down or rate-limited — fall back to Yahoo so place_trade isn't blocked
+  return yahooQuote(ticker);
 }
 
 async function getFullMarketData(ticker) {
