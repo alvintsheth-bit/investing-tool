@@ -68,7 +68,7 @@ DAILY  5:30 AM — scraper.js
                  • Logs to output/logs/scrape.log
 
 DAILY  5:55 AM — screener.js (pure code, no Claude — deterministic pre-filter)
-                 • Builds universe: 79 curated large/liquid tickers + AMC earnings (yesterday) + yesterday watchlist
+                 • Builds universe: 83 curated large/liquid tickers + AMC earnings (yesterday) + yesterday watchlist
                  • Fetches Yahoo Finance 5-min intraday bars (includePrePost=true) for every ticker
                  • Computes real gap% (pre-market price vs prior close) from 5-min bar closes
                  • RVOL = null (Yahoo returns volume=0 for all pre-market bars — not computable here)
@@ -360,8 +360,14 @@ isMarketDay()?
 ```
 screener.js (launchd job):
   Builds universe:
-    • ~79 core tickers (hand-curated: major-exchange listed, ~$10B+ market cap,
-      $50M+ avg daily dollar volume, no OTC, no recent IPOs)
+    • 83 core tickers (hand-curated: major-exchange listed, ~$10B+ market cap,
+      $50M+ avg daily dollar volume, β ≥ ~1.5 preferred, no OTC, no recent IPOs.
+      Buckets: mega-cap tech/AI, semis, financials, industrials, energy,
+      healthcare/biotech, consumer, materials, China ADRs, Bitcoin miners, high-beta/momentum.
+      Last rebalanced June 2026: cut 14 low-beta/thin names (PANW, RGTI, V, HON,
+      RTX, UNH, ABBV, MCD, WMT, BIDU, JD, ACHR, ACMR, SPCX); added 15 high-beta
+      catalysts (MARA, RIOT, AFRM, UPST, SOFI, RDDT, RIVN, SNAP, CELH, HIMS,
+      PINS, LYFT, APP, SPOT, DUOL).)
     • + AMC earnings from yesterday (FMP) — reported after yesterday's close,
         pre-market gap reflects overnight reaction. Phase 2 hard-excludes these
         from same-day trading; they surface for next-day watching only.
@@ -1428,7 +1434,7 @@ Design decisions that were changed, and the reasoning behind each removal. Kept 
 2. The agent had no fixed universe — it researched whatever the LLM decided looked interesting from search snippets. Different tickers every day, no consistency.
 3. The real discovery question ("what is moving right now?") is a data question, not a search question. Yahoo 5-min intraday bars answer it deterministically.
 
-**What replaced it:** `screener.js` — runs at 5:55am, screens a fixed 80-ticker universe plus overnight earnings plus yesterday's watchlist using real 5-min bar data. Outputs a ranked JSON file the agent reads directly.
+**What replaced it:** `screener.js` — runs at 5:55am, screens a fixed 83-ticker universe plus overnight earnings plus yesterday's watchlist using real 5-min bar data. Outputs a ranked JSON file the agent reads directly.
 
 ---
 
