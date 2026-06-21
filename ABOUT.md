@@ -277,7 +277,9 @@ Scraped the entire site on first run. Handles complex interactive pages:
 **Max iterations:** 20 (analyze) / 10 (EOD) tool-use loops per session
 **Max tokens per response:** 8,192
 
-**Edge hypothesis:** Liquid stocks that gap ≥2% pre-market on a clear overnight catalyst (news, earnings surprise, notable mention) and whose gap is confirmed by elevated RVOL after the open tend to trend directionally through the first 90 minutes of the session — the edge is in identifying which catalyst types produce sustained intraday moves vs. gaps that fade within the opening 30 minutes.
+**Edge hypothesis:** Liquid stocks that gap ≥2% pre-market on a clear overnight catalyst (news, earnings surprise, notable mention) and whose gap is confirmed by RVOL >2× (checked pre-open via `get_premarket_data` in Phase 3, before market open) tend to trend directionally through the first 90 minutes of the session — the edge is in identifying which catalyst types produce sustained intraday moves vs. gaps that fade within the opening 30 minutes.
+
+Note on RVOL timing: RVOL is `null` at screener time (5:55am) because Yahoo Finance returns zero volume for pre-market bars. It becomes available when the agent calls `get_premarket_data` during Phase 3 (~6:00am), sourced from FMP `preMarketVolume` vs `averageVolume`. Entry decisions are made with RVOL confirmed — not before it's available.
 
 ### How the Agentic Loop Works
 

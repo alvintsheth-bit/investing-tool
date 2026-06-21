@@ -154,23 +154,27 @@ function trainModel(trades) {
 
   const features = complete.map(t => SIGNAL_KEYS.map(k => (t.signals?.[k] ? 1 : 0)));
   const labels   = complete.map(t => (t.pnl > 0 ? 1 : 0));
+  // Weight each sample by |rMultiple| so high-R trades matter more than marginal wins/losses.
+  // A +4R win contributes 4× more to gradient than a +1R win with identical binary label.
+  const sampleWeights = complete.map(t => Math.max(0.2, Math.abs(t.rMultiple ?? 1)));
+  const totalWeight   = sampleWeights.reduce((a, b) => a + b, 0);
 
   let weights = new Array(SIGNAL_KEYS.length).fill(0);
   let bias    = 0;
   const lr = 0.05, lambda = 0.01, epochs = 500;
-  const n  = features.length;
 
   for (let epoch = 0; epoch < epochs; epoch++) {
     const dW = new Array(SIGNAL_KEYS.length).fill(0);
     let db = 0;
     for (let i = 0; i < n; i++) {
       const pred = sigmoid(features[i].reduce((s, f, j) => s + f * weights[j], 0) + bias);
+      const w    = sampleWeights[i];
       const err  = pred - labels[i];
-      features[i].forEach((f, j) => { dW[j] += err * f; });
-      db += err;
+      features[i].forEach((f, j) => { dW[j] += w * err * f; });
+      db += w * err;
     }
-    weights = weights.map((w, j) => w - lr * (dW[j] / n + lambda * w));
-    bias   -= lr * (db / n);
+    weights = weights.map((w, j) => w - lr * (dW[j] / totalWeight + lambda * w));
+    bias   -= lr * (db / totalWeight);
   }
 
   // Item 30: warn if entry-filter signals have near-zero variance (can't be informative features)
@@ -1033,8 +1037,9 @@ const tools = [
         atr14:         { type: 'number', description: 'ATR-14 at time of trade' },
         marketContext: { type: 'string', description: 'VIX, Fear & Greed, sector context at entry' },
         samAlignment:  { type: 'string', description: 'Sam\'s stance on this ticker (if checked)' },
+        catalystType:  { type: 'string', enum: ['earnings_beat','earnings_miss','guidance_raise','analyst_upgrade','fda_news','ma','insider_purchase','macro','sector_sympathy','notable_mention','product_launch','regulatory','technical'], description: 'Primary catalyst driving the gap. Used for edge validation over time.' },
       },
-      required: ['ticker', 'side', 'setupScore', 'rationale', 'signals'],
+      required: ['ticker', 'side', 'setupScore', 'rationale', 'signals', 'catalystType'],
     },
   },
   {
@@ -1128,7 +1133,7 @@ async function executeTool(name, input) {
       if (cbPersist.tripped) return { blocked: true, reason: `Circuit breaker: ${cbPersist.reason} — reset with: node agent.js reset-circuit` };
       if (CIRCUIT.tripped) return { blocked: true, reason: 'Circuit breaker tripped this session.' };
 
-      const { ticker, side, setupScore, rationale, signals, targetPrice: rawTarget, stopPrice: rawStop, atr14, marketContext, samAlignment } = input;
+      const { ticker, side, setupScore, rationale, signals, targetPrice: rawTarget, stopPrice: rawStop, atr14, marketContext, samAlignment, catalystType } = input;
 
       // ── Item 35: initialize position record with state machine ────────────────
       const posRecord = { ticker, side, state: TRADE_STATES.CANDIDATE, stateHistory: [] };
@@ -1216,7 +1221,7 @@ async function executeTool(name, input) {
         targetPrice:   rawTarget || parseFloat((decisionPrice * (1 + 0.0375)).toFixed(2)),
         atr14:  atr14  || null,
         signals: signals || {},
-        setupScore, rationale, marketContext, samAlignment,
+        setupScore, rationale, marketContext, samAlignment, catalystType: catalystType || null,
         entryTime:  new Date().toISOString(),
         entryPrice: decisionPrice, // updated to confirmed fill below
         slippagePct: 0,
@@ -1268,7 +1273,7 @@ async function executeTool(name, input) {
                 entryPrice, exitPrice: entryPrice,
                 pnl: 0, pnlPct: 0, rMultiple: 0,
                 maxFavorableExcursion: 0, maxAdverseExcursion: -(slippagePct),
-                signals, setupScore, rationale,
+                signals, setupScore, rationale, catalystType: catalystType || null,
                 exitReason: `slippage-exceeded-half-stop (${slippagePct.toFixed(2)}% > ${(stopDist*50).toFixed(2)}% limit)`,
                 entryTime: posRecord.entryTime, exitTime: new Date().toISOString(),
                 date: today, isLive: true,
@@ -1386,7 +1391,7 @@ async function flattenAllPositions(reason) {
         rMultiple: stopDistPct ? +(pnlPct / 100 / stopDistPct).toFixed(3) : null,
         maxFavorableExcursion: pos.maxFavorableExcursion ?? 0,
         maxAdverseExcursion:   pos.maxAdverseExcursion   ?? 0,
-        signals: pos.signals, setupScore: pos.setupScore, rationale: pos.rationale,
+        signals: pos.signals, setupScore: pos.setupScore, rationale: pos.rationale, catalystType: pos.catalystType || null,
         exitReason: reason, entryTime: pos.entryTime, exitTime: new Date().toISOString(),
         date: today, isLive: !DRY_RUN,
         state: TRADE_STATES.CLOSED, stateHistory: closedHistory,
@@ -1499,7 +1504,7 @@ PRE-SCREENED CANDIDATES — ${today}
 ⚠️  Screener file not found — falling back to yesterday's watchlist as candidates.
 Research yesterday's watchlist tickers and use get_premarket_data to check for any gaps.`;
 
-  return `You are a personal day-trading agent for Alvin. Today is ${today}. DAY TRADE session — all positions CLOSED by 12:45pm PT (exit-daemon + force-close failsafe).
+  return `You are a personal day-trading agent for Alvint. Today is ${today}. DAY TRADE session — all positions CLOSED by 12:45pm PT (exit-daemon + force-close failsafe).
 LONG ONLY — no short positions under any circumstances.
 ${DRY_RUN ? '\n⚠️  DRY RUN MODE — orders logged but NOT submitted to Robinhood. Research and score as if live.\n' : ''}
 ${PILOT_MODE ? `\n🧪 PILOT MODE — 1 position max, ${positionSize} fixed size, ~0.25% max planned loss per trade. Scale to steady-state after 20-30 clean live trades.\n` : ''}
@@ -1578,6 +1583,9 @@ Phase 4 — Sam validation (only after independent scoring):
 
 Phase 5 — Execute:
   place_trade → only if setup_score ≥ 0.45 AND earnings check passed
+    catalystType is REQUIRED — classify the primary driver:
+    earnings_beat | earnings_miss | guidance_raise | analyst_upgrade | fda_news |
+    ma | insider_purchase | macro | sector_sympathy | notable_mention | product_launch | regulatory | technical
   save_tomorrow_watchlist → tickers scoring 0.35–0.45
 
 ═══════════════════════════════════════════════════════════════
@@ -1592,7 +1600,7 @@ function buildEODPrompt(closedTrades, openPositions, benchmarks = {}) {
   const fmtBench = (q) => q ? `${q.changePercent >= 0 ? '+' : ''}${q.changePercent?.toFixed(2)}%` : 'n/a';
   const benchLine = `SPY ${fmtBench(benchmarks.spy)} | QQQ ${fmtBench(benchmarks.qqq)} | IWM ${fmtBench(benchmarks.iwm)}`;
 
-  return `You are generating the EOD report for Alvin's day-trading account. Today is ${today}.
+  return `You are generating the EOD report for Alvint's day-trading account. Today is ${today}.
 
 ## Market Benchmarks (today's close)
 ${benchLine}
@@ -1795,7 +1803,7 @@ async function runCheck() {
           rMultiple: _sdPct ? +(pnlPct / 100 / _sdPct).toFixed(3) : null,
           maxFavorableExcursion: pos.maxFavorableExcursion ?? 0,
           maxAdverseExcursion:   pos.maxAdverseExcursion   ?? 0,
-          signals: pos.signals, setupScore: pos.setupScore, rationale: pos.rationale,
+          signals: pos.signals, setupScore: pos.setupScore, rationale: pos.rationale, catalystType: pos.catalystType || null,
           exitReason, entryTime: pos.entryTime, exitTime: new Date().toISOString(), date: today,
           state: TRADE_STATES.CLOSED, isLive: !DRY_RUN,
         });
@@ -1860,7 +1868,7 @@ async function runForceClose() {
         rMultiple: _fcSdPct ? +(pnlPct / 100 / _fcSdPct).toFixed(3) : null,
         maxFavorableExcursion: pos.maxFavorableExcursion ?? 0,
         maxAdverseExcursion:   pos.maxAdverseExcursion   ?? 0,
-        signals: pos.signals, setupScore: pos.setupScore, rationale: pos.rationale,
+        signals: pos.signals, setupScore: pos.setupScore, rationale: pos.rationale, catalystType: pos.catalystType || null,
         state: TRADE_STATES.CLOSED, isLive: !DRY_RUN,
         exitReason: 'force-close 12:45pm PT', entryTime: pos.entryTime,
         exitTime: new Date().toISOString(), date: today,

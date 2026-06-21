@@ -295,7 +295,7 @@ async function closePosition(pos, currentPrice, exitReason) {
     entryPrice: pos.entryPrice, exitPrice: currentPrice,
     pnl: +pnl.toFixed(2), pnlPct: +pnlPct.toFixed(2),
     rMultiple: stopDistPct ? +(pnlPct / 100 / stopDistPct).toFixed(3) : null,
-    signals: pos.signals, setupScore: pos.setupScore, rationale: pos.rationale,
+    signals: pos.signals, setupScore: pos.setupScore, rationale: pos.rationale, catalystType: pos.catalystType || null,
     maxFavorableExcursion: pos.maxFavorableExcursion ?? 0,
     maxAdverseExcursion:   pos.maxAdverseExcursion   ?? 0,
     exitReason, entryTime: pos.entryTime, exitTime: new Date().toISOString(), date: today,
