@@ -1452,6 +1452,7 @@ Items are stacked: P1 = do now, P2 = after first 20 live trades, P3 = after firs
 | 13 | **Monthly/quarterly/annual P&L report** | weekly-report.js is built; monthly/quarterly/annual deferred until there's enough data (need 3+ months). |
 | 14 | **Sierra-style observability patterns** | Structured event emission, tiered health check severity (critical vs warning vs info), human escalation protocol. Only relevant if scaling to larger capital or multiple strategies. |
 | 18 | **Switch ML target from classification to R-multiple regression** | ChatGPT: the current binary win/loss label means a 70%-win-rate trade averaging +0.1R looks better than a 55%-win-rate trade averaging +1.2R. The thing worth predicting is expected R, not win probability. Partially mitigated by rMultiple sample weighting (implemented). Full fix: switch `trainModel()` to linear regression predicting expected R. Deferred until 200+ trades. |
+| 20 | **Upgrade `trainModel()` to `ml-random-forest` (npm: `ml`)** | Current logistic regression can't capture interaction effects between signals. `ml-random-forest` is pure Node.js (no Python, no subprocess), replaces the ~50-line gradient descent loop in `trainModel()`, and stays within the existing EOD training flow. Training is retroactive — all historical trades in `trades-log.json` are used, so no data is lost by waiting. Trigger: 100 closed trades. |
 
 ---
 
