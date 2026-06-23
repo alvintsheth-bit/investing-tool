@@ -1104,18 +1104,19 @@ npm run weekly-report
 
 ## 17. Daily Automation (macOS launchd)
 
-All 8 jobs are loaded and running:
+All 9 jobs are loaded and running:
 
 ```bash
 launchctl list | grep investing-tool
-# com.investing-tool.scrape         → 5:30 AM daily
-# com.investing-tool.analyze        → 6:00 AM daily (scan mode)
-# com.investing-tool.exit-daemon    → 6:25 AM daily (continuous monitor, exits ~1pm)
-# com.investing-tool.force-close    → 12:45 PM daily (failsafe — daemon handles primary exits)
-# com.investing-tool.eod            → 1:30 PM daily
-# com.investing-tool.monitor        → 2:15 PM daily (health check)
-# com.investing-tool.kb-weekly      → 5:00 AM every Sunday
-# com.investing-tool.weekly-report  → 5:30 PM every Sunday
+# com.investing-tool.scrape          → 5:30 AM daily
+# com.investing-tool.analyze         → 6:00 AM daily (scan mode)
+# com.investing-tool.exit-daemon     → 6:25 AM daily (continuous monitor, exits ~1pm)
+# com.investing-tool.force-close     → 12:45 PM daily (failsafe — daemon handles primary exits)
+# com.investing-tool.eod             → 1:30 PM daily
+# com.investing-tool.monitor         → 2:15 PM daily (EOD health check)
+# com.investing-tool.monitor-early   → 6:15 AM daily (early health check — emails during trading window)
+# com.investing-tool.kb-weekly       → 5:00 AM every Sunday
+# com.investing-tool.weekly-report   → 5:30 PM every Sunday
 ```
 
 All jobs except `weekly-report` perform a market-day check at startup (weekends exit immediately; holidays checked against hardcoded 2026 calendar + live Yahoo Finance QQQ status).
@@ -1127,7 +1128,8 @@ Located at `~/Library/LaunchAgents/`:
 - `com.investing-tool.exit-daemon.plist` (runs `exit-daemon.js`, long-running 6:25am–1pm)
 - `com.investing-tool.force-close.plist` (runs `agent.js force-close` — failsafe)
 - `com.investing-tool.eod.plist`
-- `com.investing-tool.monitor.plist`
+- `com.investing-tool.monitor.plist` (EOD — 2:15pm)
+- `com.investing-tool.monitor-early.plist` (early — 6:15am, passes `--early` flag)
 - `com.investing-tool.kb-weekly.plist`
 - `com.investing-tool.weekly-report.plist` (runs `weekly-report.js` — Sunday 5:30pm PT)
 
@@ -1138,7 +1140,7 @@ Located at `~/Library/LaunchAgents/`:
 - `exit-daemon.log` — 6:25am daemon output (continuous, appended through 1pm)
 - `force-close.log` — 12:45pm force-close failsafe output
 - `eod.log` — 1:30pm EOD report output
-- `monitor.log` — 2:15pm health check output
+- `monitor.log` — both 6:15am and 2:15pm health check output (appended)
 - `kb-weekly.log` — Sunday KB update output
 - `weekly-report.log` — Sunday 5:30pm weekly P&L summary output
 
@@ -1150,6 +1152,7 @@ launchctl start com.investing-tool.exit-daemon
 launchctl start com.investing-tool.force-close
 launchctl start com.investing-tool.eod
 launchctl start com.investing-tool.monitor
+launchctl start com.investing-tool.monitor-early
 launchctl start com.investing-tool.kb-weekly
 ```
 
@@ -1164,10 +1167,25 @@ The nvm-managed Node is hardcoded in all plists:
 ## 18. Health Monitor
 
 **Script:** `monitor.js`
-**Schedule:** 2:15pm PT daily (after EOD completes)
+**Schedule:** 6:15am PT (early check) AND 2:15pm PT (EOD check)
 **Cost:** $0 — pure code, no Claude API calls
 
-Runs 7 checks every trading day and sends a failure email if anything is wrong:
+Two runs per day — early fires while the trading window is still open so you can intervene:
+
+### 6:15am Early Check (`--early` flag)
+Runs 4 checks immediately after the scan completes:
+
+| Check | Pass condition | Failure means |
+|-------|---------------|---------------|
+| Screener | `screener-{today}.json` exists | screener crashed — agent had no candidates |
+| Scrape | `sam-weiss-{today}.json` exists | scraper crashed or never ran |
+| Scan | `recommendations-{today}.md` exists | scan agent crashed |
+| Silent failure | if gap-up (≥2%) candidates existed: ≥1 trade placed OR ≥1 shadow log entry exists | **agent had qualifying setups but placed zero trades AND logged nothing** — likely internal error (balance bug, hard gate mis-fire, API error). Check `output/logs/analyze.log` immediately — trading window is still open |
+
+The silent failure check is the key new guard: it catches the class of bugs (e.g. `equity_value="0"` truthy string, rvol gate mis-fire) where the agent runs and produces a recommendations file but silently blocks every trade without logging why. It only alerts if candidates had `gapPct ≥ 2%` — all-negative gaps (e.g. sector washout days) correctly produce no alert.
+
+### 2:15pm EOD Check
+Runs all 8 checks (the 4 above + 4 EOD-only):
 
 | Check | Pass condition | Failure means |
 |-------|---------------|---------------|
@@ -1176,16 +1194,19 @@ Runs 7 checks every trading day and sends a failure email if anything is wrong:
 | Scan | `recommendations-{today}.md` exists | scan agent crashed |
 | EOD | `eod-report-{today}.md` exists | EOD agent crashed |
 | Positions cleared | `trades-open.json` has 0 entries | force-close failed to close something — **check Robinhood immediately** |
-| Exit-daemon log | `exit-daemon.log` touched after 6:25am | daemon never started — positions had no monitor |
+| Exit-daemon log | `exit-daemon.log` touched 6:25am AND 12:30pm+ | daemon crashed mid-session — positions may have been unmonitored |
 | Force-close log | `force-close.log` touched after 12:45pm | failsafe job never fired |
+| Silent failure | same as early check | agent had qualifying setups but placed nothing |
 
-On failure: email subject is `🚨 Investing Agent — N failure(s) on YYYY-MM-DD` with details on which checks failed and what to look at.
+On failure: email subject is `🚨 Investing Agent [6:15am Early Check] — N failure(s)` or `[EOD Check]`.
 
 On success: no email sent (silence = green).
 
 ```bash
 # Manually trigger
-node monitor.js
+node monitor.js --early    # early check (checks 1-4 + silent failure)
+node monitor.js            # EOD check (all 8 checks)
+launchctl start com.investing-tool.monitor-early
 launchctl start com.investing-tool.monitor
 ```
 

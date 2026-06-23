@@ -67,9 +67,52 @@ function loadOpenPositions() {
   } catch { return { date: null, positions: [] }; }
 }
 
+// ─── Silent Failure Check ─────────────────────────────────────────────────────
+// Detects: screener found gap-up candidates (gapPct ≥ 2%) but agent placed zero
+// trades AND logged zero shadow/rejected candidates — indicates internal failure
+// (balance bug, hard gate mis-fire, API error) rather than a legitimate no-trade day.
+function checkSilentFailure(screenerFile) {
+  if (!existsSync(screenerFile)) return null; // screener didn't run — separate check covers this
+
+  let screenerData;
+  try { screenerData = JSON.parse(readFileSync(screenerFile, 'utf-8')); }
+  catch { return null; }
+
+  const gapUpCandidates = (screenerData?.candidates || []).filter(c => c.gapPct >= 2);
+  if (gapUpCandidates.length === 0) return null; // all gaps were down or < 2% — no-trade is correct
+
+  // Check for trades placed today
+  const tradesPath = join(OUTPUT_DIR, 'trades-log.json');
+  let tradesToday = 0;
+  if (existsSync(tradesPath)) {
+    try {
+      const tl = JSON.parse(readFileSync(tradesPath, 'utf-8'));
+      tradesToday = (tl.trades || []).filter(t => t.date === today).length;
+    } catch {}
+  }
+
+  // Check for shadow-logged rejected candidates today
+  const rejPath = join(OUTPUT_DIR, 'rejected-candidates.json');
+  let rejectedToday = 0;
+  if (existsSync(rejPath)) {
+    try {
+      const rl = JSON.parse(readFileSync(rejPath, 'utf-8'));
+      rejectedToday = (rl.candidates || []).filter(c => c.date === today).length;
+    } catch {}
+  }
+
+  if (tradesToday === 0 && rejectedToday === 0) {
+    const tickers = gapUpCandidates.map(c => `${c.ticker}(+${c.gapPct}%)`).join(', ');
+    return `❌ Silent Failure ${gapUpCandidates.length} gap-up candidate(s) qualified [${tickers}] but agent placed ZERO trades AND logged ZERO shadow entries — likely internal error (balance, API, or code gate). Check output/logs/analyze.log immediately.`;
+  }
+
+  return null; // at least one trade or shadow log entry — agent evaluated normally
+}
+
 // ─── Run Checks ───────────────────────────────────────────────────────────────
 async function main() {
-  console.log(`[monitor] Running health checks for ${today}…`);
+  const earlyMode = process.argv.includes('--early');
+  console.log(`[monitor] Running ${earlyMode ? 'early (6:15am)' : 'EOD (2:15pm)'} health checks for ${today}…`);
 
   const failures = [];
   const results  = [];
@@ -80,7 +123,8 @@ async function main() {
     try {
       const s = JSON.parse(readFileSync(screenerFile, 'utf-8'));
       const n = s?.candidates?.length ?? 0;
-      results.push(`✅ Screener     screener file present (${n} candidate(s) from ${s?.universeSize ?? '?'} stocks)`);
+      const gapUp = (s?.candidates || []).filter(c => c.gapPct >= 2).length;
+      results.push(`✅ Screener     screener file present (${n} candidate(s), ${gapUp} gap-up ≥2%)`);
     } catch {
       results.push('✅ Screener     screener file present (unreadable)');
     }
@@ -107,53 +151,80 @@ async function main() {
     results.push('❌ Scan (6am)   recommendations file MISSING');
   }
 
-  // 4. EOD report produced
-  const eodFile = join(OUTPUT_DIR, `eod-report-${today}.md`);
-  if (fileExists(eodFile)) {
-    results.push('✅ EOD (1:30pm) report file present');
-  } else {
-    failures.push('❌ EOD (1:30pm) eod-report-' + today + '.md MISSING — EOD agent may have crashed');
-    results.push('❌ EOD (1:30pm) report file MISSING');
+  // 4. (EOD only) EOD report produced
+  if (!earlyMode) {
+    const eodFile = join(OUTPUT_DIR, `eod-report-${today}.md`);
+    if (fileExists(eodFile)) {
+      results.push('✅ EOD (1:30pm) report file present');
+    } else {
+      failures.push('❌ EOD (1:30pm) eod-report-' + today + '.md MISSING — EOD agent may have crashed');
+      results.push('❌ EOD (1:30pm) report file MISSING');
+    }
   }
 
-  // 5. Open positions cleared (force-close worked)
-  const openData = loadOpenPositions();
-  const isStaleDate = openData.date && openData.date !== today;
-  const openCount   = isStaleDate ? 0 : (openData.positions?.length ?? 0);
+  // 5. (EOD only) Open positions cleared (force-close worked)
+  if (!earlyMode) {
+    const openData = loadOpenPositions();
+    const isStaleDate = openData.date && openData.date !== today;
+    const openCount   = isStaleDate ? 0 : (openData.positions?.length ?? 0);
 
-  if (openCount === 0) {
-    results.push('✅ Positions    trades-open.json clear (0 open)');
-  } else {
-    const tickers = openData.positions.map(p => p.ticker).join(', ');
-    failures.push(
-      `❌ Positions    ${openCount} position(s) still OPEN after force-close: ${tickers}` +
-      ' — check Robinhood immediately'
-    );
-    results.push(`❌ Positions    ${openCount} still open: ${tickers}`);
+    if (openCount === 0) {
+      results.push('✅ Positions    trades-open.json clear (0 open)');
+    } else {
+      const tickers = openData.positions.map(p => p.ticker).join(', ');
+      failures.push(
+        `❌ Positions    ${openCount} position(s) still OPEN after force-close: ${tickers}` +
+        ' — check Robinhood immediately'
+      );
+      results.push(`❌ Positions    ${openCount} still open: ${tickers}`);
+    }
   }
 
-  // 6. Exit-daemon: verify it STARTED (~6:25am) AND ran through end of session (~12:30pm+)
-  // A log touched only at 6:25am but not again means the daemon crashed before the session ended.
-  const daemonLog = join(OUTPUT_DIR, 'logs', 'exit-daemon.log');
-  const daemonStarted = fileTouchedAfter(daemonLog, 6.4);
-  const daemonRanFull = fileTouchedAfter(daemonLog, 12.5); // still polling at 12:30pm
-  if (!daemonStarted) {
-    failures.push('❌ Exit-daemon  exit-daemon.log NOT updated today — daemon may not have fired');
-    results.push('❌ Exit-daemon  did not start today');
-  } else if (!daemonRanFull) {
-    failures.push('❌ Exit-daemon  log last updated before 12:30pm — daemon may have crashed mid-session; positions may have been unmonitored');
-    results.push('❌ Exit-daemon  started but may have crashed mid-session');
-  } else {
-    results.push('✅ Exit-daemon  started ~6:25am and ran through end of session');
+  // 6. (EOD only) Exit-daemon: verify it STARTED (~6:25am) AND ran through end of session (~12:30pm+)
+  if (!earlyMode) {
+    const daemonLog = join(OUTPUT_DIR, 'logs', 'exit-daemon.log');
+    const daemonStarted = fileTouchedAfter(daemonLog, 6.4);
+    const daemonRanFull = fileTouchedAfter(daemonLog, 12.5);
+    if (!daemonStarted) {
+      failures.push('❌ Exit-daemon  exit-daemon.log NOT updated today — daemon may not have fired');
+      results.push('❌ Exit-daemon  did not start today');
+    } else if (!daemonRanFull) {
+      failures.push('❌ Exit-daemon  log last updated before 12:30pm — daemon may have crashed mid-session; positions may have been unmonitored');
+      results.push('❌ Exit-daemon  started but may have crashed mid-session');
+    } else {
+      results.push('✅ Exit-daemon  started ~6:25am and ran through end of session');
+    }
   }
 
-  // 7. Force-close log touched after 12:45pm (failsafe ran)
-  const fcLog = join(OUTPUT_DIR, 'logs', 'force-close.log');
-  if (fileTouchedAfter(fcLog, 12.75)) {
-    results.push('✅ Force-close  log updated after 12:45pm');
+  // 7. (EOD only) Force-close log touched after 12:45pm (failsafe ran)
+  if (!earlyMode) {
+    const fcLog = join(OUTPUT_DIR, 'logs', 'force-close.log');
+    if (fileTouchedAfter(fcLog, 12.75)) {
+      results.push('✅ Force-close  log updated after 12:45pm');
+    } else {
+      failures.push('❌ Force-close  log NOT updated today — launchd job may not have fired');
+      results.push('❌ Force-close  log not updated today');
+    }
+  }
+
+  // 8. Silent failure: gap-up candidates found but zero trades AND zero shadow logs
+  const silentFailure = checkSilentFailure(screenerFile);
+  if (silentFailure) {
+    failures.push(silentFailure);
+    results.push(silentFailure);
   } else {
-    failures.push('❌ Force-close  log NOT updated today — launchd job may not have fired');
-    results.push('❌ Force-close  log not updated today');
+    // Derive a readable status line
+    if (fileExists(screenerFile)) {
+      try {
+        const s = JSON.parse(readFileSync(screenerFile, 'utf-8'));
+        const gapUp = (s?.candidates || []).filter(c => c.gapPct >= 2).length;
+        if (gapUp === 0) {
+          results.push('✅ Silent-fail  no gap-up candidates today — no-trade expected');
+        } else {
+          results.push('✅ Silent-fail  gap-up candidates evaluated (trade or shadow log entry found)');
+        }
+      } catch {}
+    }
   }
 
   // ─── Report ─────────────────────────────────────────────────────────────────
@@ -161,7 +232,8 @@ async function main() {
   console.log('\n' + summary);
 
   if (failures.length > 0) {
-    const subject = `🚨 Investing Agent — ${failures.length} failure(s) on ${today}`;
+    const modeLabel = earlyMode ? '6:15am Early Check' : 'EOD Check';
+    const subject = `🚨 Investing Agent [${modeLabel}] — ${failures.length} failure(s) on ${today}`;
     const body = [
       `Health check ran at ${new Date().toLocaleTimeString('en-US', { timeZone: 'America/Los_Angeles' })} PT`,
       '',
