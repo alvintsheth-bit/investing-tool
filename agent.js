@@ -1202,9 +1202,8 @@ async function executeTool(name, input) {
       const portResult = acct ? await rhMCP('get_portfolio', { account_number: acct }) : null;
       const port       = portResult?.data || portResult || {};
       let equity       = parseFloat(
-        port?.equity_value || port?.total_value || port?.equity ||
-        port?.portfolio_equity || port?.market_value || port?.net_worth ||
-        port?.extended_hours_equity || port?.last_core_equity || 0
+        port?.total_value || port?.cash || port?.equity_value ||
+        port?.equity || port?.market_value || 0
       );
       if (!equity && DRY_RUN) {
         equity = loadSODBalance() || 1150;
@@ -1476,9 +1475,8 @@ async function preflightChecks() {
       const port = portResult?.data || portResult || {};
       if (DRY_RUN) console.log('  🔍 [DRY_RUN] portfolio fields:', Object.keys(port).join(', ') || '(empty)');
       balance = parseFloat(
-        port?.equity_value || port?.total_value || port?.equity ||
-        port?.portfolio_equity || port?.market_value || port?.net_worth ||
-        port?.extended_hours_equity || port?.last_core_equity || 0
+        port?.total_value || port?.cash || port?.equity_value ||
+        port?.equity || port?.market_value || 0
       );
       const prefBP = parseFloat(port?.buying_power?.buying_power || port?.buying_power || 0);
       if (balance > 0) {
