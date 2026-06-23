@@ -1157,7 +1157,7 @@ async function executeTool(name, input) {
       ]);
       if (portResult.error) return { error: portResult.error };
       const port   = portResult?.data || portResult;
-      const equity = parseFloat(port?.equity_value || port?.total_value || 0);
+      const equity = parseFloat(port?.total_value || port?.cash || port?.equity_value || 0);
       return {
         accountNumber: acct, totalValue: port?.total_value, equityValue: port?.equity_value,
         cash: port?.cash, buyingPower: port?.buying_power?.buying_power,
