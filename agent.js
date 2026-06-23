@@ -1201,7 +1201,15 @@ async function executeTool(name, input) {
       // ── Get portfolio once — used for both circuit breaker and sizing ─────────
       const portResult = acct ? await rhMCP('get_portfolio', { account_number: acct }) : null;
       const port       = portResult?.data || portResult || {};
-      const equity     = parseFloat(port?.equity_value || port?.total_value || 0);
+      let equity       = parseFloat(
+        port?.equity_value || port?.total_value || port?.equity ||
+        port?.portfolio_equity || port?.market_value || port?.net_worth ||
+        port?.extended_hours_equity || port?.last_core_equity || 0
+      );
+      if (!equity && DRY_RUN) {
+        equity = loadSODBalance() || 1150;
+        console.log(`  ℹ️  DRY_RUN: portfolio $0 — using $${equity} for paper sizing`);
+      }
       if (!equity) return { error: 'Could not read account balance — pre-flight failed' };
 
       // ── Item 34: use settled buying power for position sizing ─────────────────
@@ -1466,7 +1474,12 @@ async function preflightChecks() {
     if (acct) {
       const portResult = await rhMCP('get_portfolio', { account_number: acct });
       const port = portResult?.data || portResult || {};
-      balance = parseFloat(port?.equity_value || port?.total_value || 0);
+      if (DRY_RUN) console.log('  🔍 [DRY_RUN] portfolio fields:', Object.keys(port).join(', ') || '(empty)');
+      balance = parseFloat(
+        port?.equity_value || port?.total_value || port?.equity ||
+        port?.portfolio_equity || port?.market_value || port?.net_worth ||
+        port?.extended_hours_equity || port?.last_core_equity || 0
+      );
       const prefBP = parseFloat(port?.buying_power?.buying_power || port?.buying_power || 0);
       if (balance > 0) {
         console.log(`  ✅ Account equity: $${balance.toFixed(2)}`);
@@ -1484,6 +1497,10 @@ async function preflightChecks() {
           saveSODBalance(balance);
           console.log(`  ✅ SOD balance saved: $${balance.toFixed(2)}`);
         }
+      } else if (DRY_RUN) {
+        const savedSOD = loadSODBalance();
+        balance = savedSOD || 1150;
+        console.log(`  ℹ️  DRY_RUN: portfolio returned $0 — using ${savedSOD ? 'saved SOD' : 'fallback'} balance $${balance} for paper sizing`);
       } else {
         console.log('  ⚠️  Balance is $0 or unreadable — proceeding in research-only mode');
       }
