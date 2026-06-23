@@ -1162,7 +1162,8 @@ async function executeTool(name, input) {
       // Hard excludes
       if (setupScore < 0.45) return { blocked: true, reason: `setup_score ${setupScore.toFixed(2)} < 0.45 threshold` };
       if (!signals?.premarket_gap_up) return { blocked: true, reason: 'Hard gate: premarket_gap_up must be true — gap must exceed 2% pre-market before entry' };
-      if (!signals?.rvol_spike) return { blocked: true, reason: 'Hard gate: rvol_spike must be true — RVOL must exceed 2× 30-day average before entry' };
+      // rvol_spike is NOT a hard code gate — Yahoo preMarketVolume returns null at 6am PT,
+      // making rvolHigh unreliable as a binary block. Kept as a heavily-weighted scoring signal.
       if (new Date().getUTCHours() >= 17) return { blocked: true, reason: 'Entry window closed — past 10am PT' };
 
       const lossCheck = checkConsecutiveLosses();
@@ -1552,7 +1553,9 @@ HARD EXCLUDES (never trade):
   ✗ Earnings today before close
   ✗ setup_score < 0.45
   ✗ premarket_gap_up = false (gap must be confirmed >2% before entry — no exceptions)
-  ✗ rvol_spike = false (RVOL must be confirmed >2× before entry — no exceptions)
+  ⚠️ rvol_spike = false → strong caution, lower score — but NOT a hard block (Yahoo preMarketVolume
+     is unreliable at 6am PT; null data ≠ confirmed low RVOL. Only hard-block if RVOL is
+     explicitly confirmed <1x via FMP data. Note data-unavailable cases in rationale.)
   ✗ Already at ${MAX_POSITIONS} open position(s)
   ✗ 3 consecutive losses (manual review required)
 
@@ -1606,7 +1609,8 @@ Phase 4 — Sam validation (only after independent scoring):
   whether a stock is gapping 3% this morning with a real catalyst. Keep them separate.
 
 Phase 5 — Execute:
-  place_trade → only if setup_score ≥ 0.45 AND premarket_gap_up AND rvol_spike AND earnings check passed
+  place_trade → only if setup_score ≥ 0.45 AND premarket_gap_up AND earnings check passed
+    rvol_spike: include if confirmed >2x — but null/unavailable data is NOT a blocker, note it in rationale
     catalystType is REQUIRED — classify the primary driver:
     earnings_beat | earnings_miss | guidance_raise | analyst_upgrade | fda_news |
     ma | insider_purchase | macro | sector_sympathy | notable_mention | product_launch | regulatory | technical

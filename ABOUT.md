@@ -654,10 +654,10 @@ Gap >2% pre-market on elevated volume. Computed from Yahoo Finance `preMarketPri
 Formula: `(preMarketPrice - prevClose) / prevClose * 100 > 2`
 **This signal must be `true` to trade — not just a scoring signal. If `false`, the trade is blocked in code regardless of setup_score.**
 
-**`rvol_spike`** — Relative Volume (HARD GATE)
+**`rvol_spike`** — Relative Volume (scoring signal, NOT a hard gate)
 Pre-market volume >2× the 30-day daily average × 0.08 (pre-market is ~8% of daily session).
 High RVOL = institutional activity, not retail noise.
-**This signal must be `true` to trade — not just a scoring signal. If `false`, the trade is blocked in code regardless of setup_score.**
+**Not a hard code gate** — Yahoo Finance's `preMarketVolume` field returns null at 6am PT, making `rvolHigh` unreliable as a binary block. Null data ≠ confirmed low RVOL. Kept as a heavily-weighted scoring signal; agent notes RVOL status in rationale. Only hard-blocks if RVOL is explicitly confirmed <1× via FMP data.
 
 **`gap_likely_holds`** — Gap sustainability
 Fires `true` when gap >5%: historically the gap holds intraday (momentum continues).
@@ -705,7 +705,7 @@ Model-driven variable sizing (based on score confidence) is reserved until 200 l
 **Hard excludes (regardless of score):**
 - Earnings today before close
 - `premarket_gap_up = false` (code gate — no exceptions)
-- `rvol_spike = false` (code gate — no exceptions)
+- `rvol_spike = false` when RVOL explicitly confirmed <1× (scoring penalty + agent caution; null/unavailable data is NOT a block)
 - Past 10am PT entry window
 - Already at max concurrent positions (pilot: 1, full: 2)
 - 3 consecutive losses (paused for manual review)
