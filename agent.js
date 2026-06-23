@@ -865,8 +865,26 @@ async function getFearGreedAndVIX() {
 }
 
 async function getEarningsCalendar() {
+  // Primary: FMP earnings calendar for today — structured data, single call, not rate-limited.
+  // Fallback: DuckDuckGo web search if FMP returns nothing (free tier gap or network issue).
+  try {
+    const tomorrow = new Date(Date.now() + 86400000).toISOString().split('T')[0];
+    const data = await fmp(`earnings-calendar?from=${today}&to=${tomorrow}`);
+    if (Array.isArray(data) && data.length > 0) {
+      const todayEarnings = data.filter(e => e.date === today);
+      if (todayEarnings.length > 0) {
+        return {
+          source: 'FMP',
+          earningsToday: todayEarnings.map(e => ({ ticker: e.symbol, time: e.time, eps: e.epsEstimated, revenue: e.revenueEstimated })),
+          note: 'HARD EXCLUDE any ticker with earnings today before close — do not trade regardless of setup score.',
+        };
+      }
+      return { source: 'FMP', earningsToday: [], note: 'No earnings today per FMP — proceed normally.' };
+    }
+  } catch {}
+  // Fallback to web search if FMP fails
   const search = await webSearch(`earnings calendar today ${today} results expected`, 6);
-  return { results: search.results || [], note: 'Check these — avoid buying stock with earnings today before close.' };
+  return { source: 'DuckDuckGo-fallback', results: search.results || [], note: 'FMP earnings unavailable — treat this list with caution. When in doubt, skip any stock with earnings rumor.' };
 }
 
 async function getSectorRotation() {
