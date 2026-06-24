@@ -1288,8 +1288,11 @@ async function executeTool(name, input) {
       let slippagePct = 0;
 
       if (DRY_RUN) {
-        // Simulate immediate fill at decision price — stop/target already set
+        // Simulate immediate fill at decision price, then re-anchor stop/target to fill
         transitionState(posRecord, TRADE_STATES.FILLED, { fillPrice: decisionPrice, note: 'DRY_RUN — decision price used as fill' });
+        const dryAtrPct = atr14 ? (parseFloat(atr14) / decisionPrice) : 0.025;
+        posRecord.stopPrice   = parseFloat((decisionPrice * (1 - dryAtrPct)).toFixed(2));
+        posRecord.targetPrice = parseFloat((decisionPrice * (1 + dryAtrPct * 1.5)).toFixed(2));
         transitionState(posRecord, TRADE_STATES.PROTECTED, { stopPrice: posRecord.stopPrice, targetPrice: posRecord.targetPrice });
       } else {
         // Live: poll broker for confirmed average fill price (up to 3 attempts)
@@ -1302,8 +1305,9 @@ async function executeTool(name, input) {
             entryPrice  = parseFloat(filled.average_buy_price);
             slippagePct = Math.abs((entryPrice - decisionPrice) / decisionPrice * 100);
             transitionState(posRecord, TRADE_STATES.FILLED, { fillPrice: entryPrice, slippagePct: +slippagePct.toFixed(3) });
-            // Recompute stop/target from confirmed fill price (item 19)
-            const stopDist = rawStop ? Math.abs((rawStop - decisionPrice) / decisionPrice) : (parseFloat(atr14 || 0) / decisionPrice) * 0.75;
+            // Recompute stop/target from confirmed fill price — use atr14 as % of decision price
+            // so the same ATR distance is preserved regardless of slippage between research and fill
+            const stopDist = atr14 ? (parseFloat(atr14) / decisionPrice) : (rawStop ? Math.abs((rawStop - decisionPrice) / decisionPrice) : 0.025);
             posRecord.entryPrice  = entryPrice;
             posRecord.slippagePct = +slippagePct.toFixed(3);
             posRecord.stopPrice   = parseFloat((entryPrice * (1 - stopDist)).toFixed(2));
