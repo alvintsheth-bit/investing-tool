@@ -2,7 +2,7 @@
 
 **Owner:** [OWNER]
 **Built:** June 2026
-**Status:** Fully operational — Robinhood auth ✅ | Gmail email ✅ | Daily cron ✅ | Self-learning ✅ | Day-trade mode ✅ | DRY_RUN=true (paper trading until cycle verified)
+**Status:** Fully operational — Robinhood auth ✅ | Gmail email ✅ | Daily cron ✅ | Self-learning ✅ | Day-trade mode ✅ | DRY_RUN=false (live trading — cycle verified Jun 25 2026)
 
 ---
 
@@ -1502,6 +1502,24 @@ Design decisions that were changed, and the reasoning behind each removal. Kept 
 **Why it was removed:** Robinhood retail accounts don't support shorting stock. The agent was producing short setups that could never execute, wasting research iterations on them.
 
 **What replaced it:** "LONG ONLY — no short positions under any circumstances" added to the hard rules section of the scan prompt.
+
+---
+
+### Stop/target anchored to pre-market price instead of fill (fixed June 2026)
+
+**What it was:** `place_trade()` used the agent's pre-calculated stop/target (from research-time price) without re-anchoring to the actual fill. In DRY_RUN, stop could end up above entry on volatile days.
+
+**Why it was wrong:** ARM trade (Jun 24) — pre-market ~$379, stop at $369.53, fill at $366.39. Stop was above entry, triggered immediately on first daemon poll.
+
+**What was fixed:** Both DRY_RUN and live branches now re-anchor stop/target from actual fill using `atr14 / decisionPrice` as the stop distance.
+
+---
+
+### FMP quote used as decision price (fixed June 2026)
+
+**What it was:** `place_trade()` called FMP `quote` endpoint for the current price. FMP returns previous day's close at 6am PT on large overnight gaps (MU: returned $1,048 vs actual pre-market $1,242).
+
+**What replaced it:** Screener's `preMarketPrice` (true Yahoo 5-min bar from 5:55am) is now the primary decision price. FMP `quote` is fallback only when ticker isn't in screener output.
 
 ---
 

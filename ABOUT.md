@@ -2,7 +2,7 @@
 
 **Owner:** Alvint Sheth (alvintsheth@gmail.com)
 **Built:** June 2026
-**Status:** Fully operational — Robinhood auth ✅ | Gmail email ✅ | Daily cron ✅ | Self-learning ✅ | Day-trade mode ✅ | DRY_RUN=true (paper trading until cycle verified)
+**Status:** Fully operational — Robinhood auth ✅ | Gmail email ✅ | Daily cron ✅ | Self-learning ✅ | Day-trade mode ✅ | DRY_RUN=false (live trading — cycle verified Jun 25 2026)
 
 ---
 
@@ -1516,6 +1516,26 @@ Design decisions that were changed, and the reasoning behind each removal. Kept 
 **Why it was removed:** Robinhood retail accounts don't support shorting stock. The agent was producing short setups that could never execute, wasting research iterations on them. The system is long-only.
 
 **What replaced it:** "LONG ONLY — no short positions under any circumstances" added to the hard rules section of the scan prompt.
+
+---
+
+### Stop/target anchored to pre-market price instead of fill (fixed June 2026)
+
+**What it was:** `place_trade()` accepted `stopPrice` and `targetPrice` from the agent, which the LLM calculated during Phase 3 research based on the pre-market price it saw. In DRY_RUN mode, these values were used directly. In live mode, a re-anchoring step existed but used `|rawStop - decisionPrice| / decisionPrice` as the stop distance — wrong when the research price had moved by the time of execution.
+
+**Why it was wrong:** If the pre-market price moved between the agent's research phase and order execution (common on volatile days), the stop could end up on the wrong side of the fill. ARM trade (Jun 24): pre-market ~$379, stop calculated at $369.53, actual fill at $366.39 — stop was above entry, triggered immediately on first daemon poll. P&L showed $0 because DRY_RUN fill = decision price, masking the problem.
+
+**What was fixed:** DRY_RUN branch now re-anchors stop/target from the fill price using `atr14` as a percentage of `decisionPrice`. Live branch now uses `atr14 / decisionPrice` as the stop distance instead of the raw distance between pre-market stop and execution price. Both branches produce stop/target correctly anchored to where the fill actually landed.
+
+---
+
+### FMP quote used as decision price (fixed June 2026)
+
+**What it was:** `place_trade()` called `getQuote(ticker)` (FMP `quote` endpoint) to get the current price for share count and stop/target calculation.
+
+**Why it was wrong:** FMP's `quote` endpoint at 6am PT returns the previous day's close price for large overnight gaps — it doesn't reflect pre-market activity. MU trade (Jun 25): FMP returned $1,048 (previous close) instead of the actual pre-market price of ~$1,242. In DRY_RUN this produced an unrealistic entry price, incorrect share count, and P&L that didn't reflect reality. In live trading, stop/target would be anchored to the wrong price before the fill re-anchor corrected them.
+
+**What replaced it:** `screener.js` already fetches true pre-market 5-minute bar prices from Yahoo at 5:55am and stores `preMarketPrice` per candidate. `place_trade()` now reads the screener file first and uses `preMarketPrice` as the decision price. FMP `quote` is only called as a fallback when the ticker isn't in the screener output.
 
 ---
 
