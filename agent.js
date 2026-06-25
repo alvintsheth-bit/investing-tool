@@ -1251,10 +1251,17 @@ async function executeTool(name, input) {
         return { blocked: true, reason: tripReason };
       }
 
-      // ── Sizing from buying power (item 34), price from quote ─────────────────
-      const dollarAmount  = computePositionDollars(availableCash);
-      const quote         = await getQuote(ticker);
-      const decisionPrice = quote?.price;
+      // ── Sizing from buying power (item 34), price from screener → FMP fallback ──
+      // Screener fetches true 5-min Yahoo pre-market bars at 5:55am — always use that
+      // as the decision price. FMP quote at 6am can return stale previous-day close
+      // on large overnight gaps (e.g. earnings). FMP is fallback only.
+      const dollarAmount = computePositionDollars(availableCash);
+      const screenerCandidate = loadScreenerCandidates()?.candidates?.find(c => c.ticker === ticker);
+      const screenerPrice = screenerCandidate?.preMarketPrice ?? null;
+      const quote = screenerPrice ? null : await getQuote(ticker);
+      const decisionPrice = screenerPrice || quote?.price;
+      if (screenerPrice) console.log(`  📡 Using screener pre-mkt price $${screenerPrice} for ${ticker}`);
+      else console.log(`  📡 Screener price unavailable — using FMP quote $${quote?.price} for ${ticker}`);
       if (!decisionPrice) return { error: `Could not get current price for ${ticker}` };
 
       const fractionalQty = (dollarAmount / decisionPrice).toFixed(4);
