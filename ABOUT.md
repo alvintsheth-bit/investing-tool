@@ -1117,7 +1117,7 @@ launchctl list | grep investing-tool
 # com.investing-tool.monitor-early     → 6:15 AM daily (early health check — emails during trading window)
 # com.investing-tool.kb-weekly         → 5:00 AM every Sunday
 # com.investing-tool.weekly-report     → 5:30 PM every Sunday
-# com.investing-tool.universe-refresh  → 5:00 AM quarterly (Jul 1, Oct 1, Jan 2, Apr 1)
+# com.investing-tool.universe-refresh  → 5:00 AM monthly (1st of every month)
 ```
 
 All jobs except `weekly-report` perform a market-day check at startup (weekends exit immediately; holidays checked against hardcoded 2026 calendar + live Yahoo Finance QQQ status).
@@ -1133,7 +1133,7 @@ Located at `~/Library/LaunchAgents/`:
 - `com.investing-tool.monitor-early.plist` (early — 6:15am, passes `--early` flag)
 - `com.investing-tool.kb-weekly.plist`
 - `com.investing-tool.weekly-report.plist` (runs `weekly-report.js` — Sunday 5:30pm PT)
-- `com.investing-tool.universe-refresh.plist` (runs `universe-refresh.js` — quarterly)
+- `com.investing-tool.universe-refresh.plist` (runs `universe-refresh.js` — monthly, 1st of each month)
 
 ### Log Files
 `output/logs/`:
@@ -1145,7 +1145,7 @@ Located at `~/Library/LaunchAgents/`:
 - `monitor.log` — both 6:15am and 2:15pm health check output (appended)
 - `kb-weekly.log` — Sunday KB update output
 - `weekly-report.log` — Sunday 5:30pm weekly P&L summary output
-- `universe-refresh.log` — quarterly universe refresh output
+- `universe-refresh.log` — monthly universe refresh output
 
 ### To manually trigger any job
 ```bash
@@ -1452,7 +1452,7 @@ Items are stacked: P1 = do now, P2 = after first 20 live trades, P3 = after firs
 | 16 | **Signal ablation study at trade #100** | ChatGPT: after 100 trades, 2-3 signals will matter, 5-6 will do nothing, 1-2 may be harmful. Goal is elimination, not accumulation. Run ablation: compare model performance with each signal removed one at a time. Candidates likely to survive: RVOL, catalyst quality, sector strength. Candidates likely to drop: contrarian_social, insider_buying, analyst_conviction. |
 | 17 | **Catalyst × Regime pivot table at trade #100** | ChatGPT: produce two cross-tab reports — (1) Catalyst Type × Avg R and (2) Regime Bucket × Avg R. This is where real edge discovery happens. Without regime tagging we could never answer "do earnings_beat gaps outperform in low-VIX environments?" The data is now being collected; the analysis is deferred until the sample is meaningful. |
 | 22 | **Evaluate trailing stop vs fixed 1.5× ATR target** | Current exit takes profits at a fixed 1.5× ATR above entry (e.g. ~3.9% for ARM). This caps upside on strong moves — if a stock runs 10%, you exit at 3.9% and miss the rest. Trailing stop alternative: raise the stop as price rises, only exit on reversal. Captures more upside on gap-and-go days but risks giving back gains on a quick reversal. Trigger: 30-50 paper trades. Check whether winners consistently blow through the 1.5× target (suggesting targets are too tight) or barely reach it (suggesting they're appropriate). Don't guess — let the data decide. |
-| 21 | ~~**Expand screener universe beyond 83 fixed tickers**~~ | **Done (Jun 30 2026).** Implemented `universe-refresh.js` — quarterly script that fetches all 503 S&P 500 tickers from Wikipedia, merges with ~30 high-beta seed names (SOXL, IONQ, MARA, RBLX, etc.), fetches 1yr daily stats from Yahoo, filters on avg daily dollar vol > $30M + price > $5, caps at 30 per GICS sector for diversity. Writes `output/universe.json` (321 tickers across 14 sectors on first run). `screener.js` reads `universe.json` at startup, falls back to old hardcoded 83 if file missing. Scheduled quarterly via launchd (Jul 1, Oct 1, Jan 2, Apr 1 at 5am PT). Key sectors added: Health Care (30), Industrials (30), Consumer Staples (30), Real Estate (30), Utilities (30), Energy (21) — these move on independent catalysts (FDA, defense, earnings, macro) vs. the old all-tech list. |
+| 21 | ~~**Expand screener universe beyond 83 fixed tickers**~~ | **Done (Jun 30 2026).** Implemented `universe-refresh.js` — monthly script (1st of each month, 5am PT) that fetches S&P 500 + NASDAQ 100 + S&P MidCap 400 from Wikipedia (~900 candidates), fetches 1yr daily data from Yahoo, computes beta vs SPY via linear regression, filters on beta > 1.0 + avg daily dollar vol > $50M + price > $10, caps at 35 per GICS sector. Writes `output/universe.json` (200 tickers, 12 sectors on first run). Seeds (China ADRs, leveraged ETFs, crypto miners, small high-beta names) bypass filters. `screener.js` reads `universe.json` at startup, falls back to old 83-name list if missing. Cost: $0 — Wikipedia + Yahoo Finance only. Key new sectors: Health Care (18 biotech/diagnostic names), Industrials (35 incl. airlines), Consumer Discretionary (35 incl. cruise lines). |
 
 ### P3 — Tech Debt / Refactor (after first profitable month)
 

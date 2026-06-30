@@ -1115,7 +1115,7 @@ launchctl list | grep investing-tool
 # com.investing-tool.monitor-early     → 6:15 AM daily (early health check — emails during trading window)
 # com.investing-tool.kb-weekly         → 5:00 AM every Sunday
 # com.investing-tool.weekly-report     → 5:30 PM every Sunday
-# com.investing-tool.universe-refresh  → 5:00 AM quarterly (Jul 1, Oct 1, Jan 2, Apr 1)
+# com.investing-tool.universe-refresh  → 5:00 AM monthly (1st of every month)
 ```
 
 All jobs except `weekly-report` perform a market-day check at startup (weekends exit immediately; holidays checked against hardcoded 2026 calendar + live Yahoo Finance QQQ status).
@@ -1131,7 +1131,7 @@ Located at `~/Library/LaunchAgents/`:
 - `com.investing-tool.monitor-early.plist` (early — 6:15am, passes `--early` flag)
 - `com.investing-tool.kb-weekly.plist`
 - `com.investing-tool.weekly-report.plist` (runs `weekly-report.js` — Sunday 5:30pm PT)
-- `com.investing-tool.universe-refresh.plist` (runs `universe-refresh.js` — quarterly)
+- `com.investing-tool.universe-refresh.plist` (runs `universe-refresh.js` — monthly, 1st of each month)
 
 ### Log Files
 `output/logs/`:
@@ -1143,7 +1143,7 @@ Located at `~/Library/LaunchAgents/`:
 - `monitor.log` — both 6:15am and 2:15pm health check output (appended)
 - `kb-weekly.log` — Sunday KB update output
 - `weekly-report.log` — Sunday 5:30pm weekly P&L summary output
-- `universe-refresh.log` — quarterly universe refresh output
+- `universe-refresh.log` — monthly universe refresh output
 
 ### To manually trigger any job
 ```bash
@@ -1438,7 +1438,7 @@ Items are stacked: P1 = do now, P2 = after first 20 live trades, P3 = after firs
 | 16 | **Signal ablation study at trade #100** | ChatGPT: after 100 trades, 2-3 signals will matter, 5-6 will do nothing, 1-2 may be harmful. Goal is elimination, not accumulation. Run ablation: compare model performance with each signal removed one at a time. Candidates likely to survive: RVOL, catalyst quality, sector strength. Candidates likely to drop: contrarian_social, insider_buying, analyst_conviction. |
 | 17 | **Catalyst × Regime pivot table at trade #100** | ChatGPT: produce two cross-tab reports — (1) Catalyst Type × Avg R and (2) Regime Bucket × Avg R. This is where real edge discovery happens. The data is now being collected; the analysis is deferred until the sample is meaningful. |
 | 22 | **Evaluate trailing stop vs fixed 1.5× ATR target** | Fixed 1.5× ATR target caps upside on strong moves. Trailing stop alternative raises the stop as price rises, only exiting on reversal — captures more of a gap-and-go run. Trigger: 30-50 paper trades. Check whether winners consistently blow through the 1.5× target (too tight) or barely reach it (appropriate). Let data decide, not intuition. |
-| 21 | ~~**Expand screener universe beyond 83 fixed tickers**~~ | **Done (Jun 30 2026).** `universe-refresh.js` fetches all 503 S&P 500 tickers from Wikipedia, merges with ~30 high-beta seed names, filters on avg daily dollar vol > $30M + price > $5, caps at 30 per GICS sector. Writes `output/universe.json` (321 tickers, 14 sectors). `screener.js` reads this file at startup, falls back to old 83-name list if missing. Scheduled quarterly via launchd. Key new sectors: Health Care, Industrials, Consumer Staples, Energy — independent catalyst movers vs. old all-tech list. |
+| 21 | ~~**Expand screener universe beyond 83 fixed tickers**~~ | **Done (Jun 30 2026).** `universe-refresh.js` fetches all 503 S&P 500 tickers from Wikipedia, merges with ~30 high-beta seed names, filters on avg daily dollar vol > $30M + price > $5, caps at 30 per GICS sector. Writes `output/universe.json` (321 tickers, 14 sectors). `screener.js` reads this file at startup, falls back to old 83-name list if missing. Scheduled monthly via launchd (1st of each month, 5am PT). Criteria: beta > 1.0 vs SPY, avg daily dollar vol > $50M, price > $10, top 35 per sector. Sources: S&P 500 + NASDAQ 100 + MidCap 400 (~900 candidates). Key new sectors: Health Care, Industrials, Consumer Staples, Energy — independent catalyst movers vs. old all-tech list. |
 
 ### P3 — Tech Debt / Refactor (after first profitable month)
 
