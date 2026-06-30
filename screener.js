@@ -33,9 +33,10 @@ if (dayOfWeek === 0 || dayOfWeek === 6 || US_MARKET_HOLIDAYS.has(today)) {
   process.exit(0);
 }
 
-// ─── Fixed Universe ───────────────────────────────────────────────────────────
-// Liquid, volatile, catalyst-rich stocks. Long-only — no short candidates.
-const CORE_UNIVERSE = [
+// ─── Universe ─────────────────────────────────────────────────────────────────
+// Primary source: output/universe.json (written quarterly by universe-refresh.js)
+// Fallback: hardcoded list below (used on first run or if refresh file is missing)
+const FALLBACK_UNIVERSE = [
   // Mega-cap tech & AI
   'NVDA', 'TSLA', 'AAPL', 'META', 'MSFT', 'AMZN', 'GOOGL', 'AMD', 'PLTR', 'COIN',
   'MSTR', 'ARM', 'SMCI', 'AVGO', 'CRM', 'NFLX', 'UBER', 'HOOD', 'SNOW', 'CRWD',
@@ -62,8 +63,21 @@ const CORE_UNIVERSE = [
   'GME', 'RDDT', 'SNAP', 'CELH', 'HIMS', 'PINS', 'LYFT', 'RIVN',
   'APP', 'AFRM', 'UPST', 'SOFI', 'SPOT', 'DUOL',
 ];
-// Universe criteria: major-exchange listed, ~$10B+ market cap, $50M+ avg daily dollar volume,
-// no OTC, no recent IPOs. Any future additions should meet this bar.
+
+function loadUniverse() {
+  const universePath = join(OUTPUT_DIR, 'universe.json');
+  if (existsSync(universePath)) {
+    try {
+      const u = JSON.parse(readFileSync(universePath, 'utf-8'));
+      if (Array.isArray(u.tickers) && u.tickers.length > 50) {
+        log(`Universe loaded from universe.json (${u.tickers.length} tickers, refreshed ${u.refreshDate})`);
+        return u.tickers;
+      }
+    } catch {}
+  }
+  log(`universe.json missing or invalid — using fallback list (${FALLBACK_UNIVERSE.length} tickers)`);
+  return FALLBACK_UNIVERSE;
+}
 
 // ─── Data Fetching ────────────────────────────────────────────────────────────
 const sleep = ms => new Promise(r => setTimeout(r, ms));
@@ -183,10 +197,11 @@ async function main() {
   log(`Started — ${today}`);
 
   // Build universe
+  const coreUniverse     = loadUniverse();
   const earningsTickers  = await fmpEarnings();
   const watchlistTickers = loadYesterdayWatchlist();
-  const universe = [...new Set([...CORE_UNIVERSE, ...earningsTickers, ...watchlistTickers])];
-  log(`Universe: ${universe.length} tickers (${CORE_UNIVERSE.length} core + ${earningsTickers.length} earnings + ${watchlistTickers.length} watchlist)`);
+  const universe = [...new Set([...coreUniverse, ...earningsTickers, ...watchlistTickers])];
+  log(`Universe: ${universe.length} tickers (${coreUniverse.length} core + ${earningsTickers.length} earnings + ${watchlistTickers.length} watchlist)`);
 
   // Screen all tickers
   const results = [];
