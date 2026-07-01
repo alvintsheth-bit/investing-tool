@@ -1721,10 +1721,42 @@ async function sendEODEmail(reportText, closedTrades, benchmarks = {}) {
   const benchStr = `SPY ${fmtB(benchmarks.spy)} | QQQ ${fmtB(benchmarks.qqq)} | IWM ${fmtB(benchmarks.iwm)}`;
   const subject  = `📈 EOD ${today} | ${pnlStr} | ${wins}W/${closedTrades.length - wins}L | ${benchStr}`;
 
+  const tradeRows = closedTrades.map(t => {
+    const slip = t.slippagePct != null ? `${t.slippagePct >= 0 ? '+' : ''}${t.slippagePct.toFixed(2)}%` : '—';
+    const dec  = t.decisionPrice ? `$${t.decisionPrice.toFixed(2)}` : '—';
+    const fill = `$${t.entryPrice.toFixed(2)}`;
+    const exit = `$${t.exitPrice.toFixed(2)}`;
+    const pnlColor = t.pnl >= 0 ? '#1a7f37' : '#cf222e';
+    const pnlCell = `<span style="color:${pnlColor};font-weight:bold;">${t.pnl >= 0 ? '+' : ''}$${t.pnl.toFixed(2)} (${t.pnlPct.toFixed(1)}%)</span>`;
+    const r = t.rMultiple != null ? `${t.rMultiple.toFixed(2)}R` : '—';
+    return `<tr style="border-bottom:1px solid #eee;">
+      <td style="padding:6px 10px;font-weight:bold;">${t.ticker}</td>
+      <td style="padding:6px 10px;">${dec}</td>
+      <td style="padding:6px 10px;">${fill}</td>
+      <td style="padding:6px 10px;color:${t.slippagePct > 1 ? '#cf222e' : '#555'};">${slip}</td>
+      <td style="padding:6px 10px;">${exit}</td>
+      <td style="padding:6px 10px;">${pnlCell}</td>
+      <td style="padding:6px 10px;color:#555;">${r}</td>
+    </tr>`;
+  }).join('');
+
   const html = `<html><body style="font-family:monospace;max-width:800px;margin:auto;padding:24px;">
 <h2>📈 Day Trade EOD — ${today}</h2>
 <p><strong>${pnlStr}</strong> | ${wins}W / ${closedTrades.length - wins}L | ${DRY_RUN ? '🔷 DRY RUN' : '🚨 LIVE'}</p>
 <p style="color:#555;font-size:13px;">Market: ${benchStr}</p>
+${closedTrades.length ? `
+<table style="width:100%;border-collapse:collapse;margin:16px 0;font-size:13px;">
+  <thead><tr style="background:#f6f8fa;text-align:left;">
+    <th style="padding:6px 10px;">Ticker</th>
+    <th style="padding:6px 10px;">Decision $</th>
+    <th style="padding:6px 10px;">Fill $</th>
+    <th style="padding:6px 10px;">Slippage</th>
+    <th style="padding:6px 10px;">Exit $</th>
+    <th style="padding:6px 10px;">P&amp;L</th>
+    <th style="padding:6px 10px;">R-Multiple</th>
+  </thead>
+  <tbody>${tradeRows}</tbody>
+</table>` : ''}
 <pre style="white-space:pre-wrap;line-height:1.5;">${reportText.replace(/</g, '&lt;').replace(/>/g, '&gt;')}</pre>
 </body></html>`;
 

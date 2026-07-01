@@ -350,6 +350,8 @@ async function closePosition(pos, currentPrice, exitReason) {
   const stopDistPct = pos.stopPrice ? Math.abs((pos.entryPrice - pos.stopPrice) / pos.entryPrice) : null;
   recordClosedTrade({
     ticker: pos.ticker, side: pos.side, dollarAmount: pos.dollarAmount,
+    decisionPrice: pos.decisionPrice || null,
+    slippagePct: pos.slippagePct || null,
     entryPrice: pos.entryPrice, exitPrice: currentPrice,
     pnl: +pnl.toFixed(2), pnlPct: +pnlPct.toFixed(2),
     rMultiple: stopDistPct ? +(pnlPct / 100 / stopDistPct).toFixed(3) : null,
