@@ -62,6 +62,25 @@ async function yahooWeeklyReturn(symbol) {
   } catch { return null; }
 }
 
+// ─── Yahoo Day Close ──────────────────────────────────────────────────────────
+async function fetchDayClose(symbol, date) {
+  try {
+    const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(symbol)}?interval=1d&range=30d`;
+    const r   = await fetch(url, { headers: { 'User-Agent': YAHOO_UA, Accept: 'application/json' } });
+    if (!r.ok) return null;
+    const d   = await r.json();
+    const result = d?.chart?.result?.[0];
+    if (!result) return null;
+    const timestamps = result.timestamp || [];
+    const closes     = result.indicators?.quote?.[0]?.close || [];
+    for (let i = 0; i < timestamps.length; i++) {
+      if (new Date(timestamps[i] * 1000).toISOString().split('T')[0] === date && closes[i] != null)
+        return closes[i];
+    }
+    return null;
+  } catch { return null; }
+}
+
 // ─── Load Local Data ──────────────────────────────────────────────────────────
 function loadTradesLog() {
   const path = join(OUTPUT_DIR, 'trades-log.json');
@@ -239,11 +258,24 @@ async function main() {
   const pnlStr  = displayTrades.length ? fmt$(totalPnl) : 'no trades';
   const subject = `📊 Weekly Report ${monday} | ${pnlStr} | ${wins.length}W/${losses.length}L | SPY ${spy ? fmtPct(spy.pct) : '?'}`;
 
-  const tradeRows = displayTrades.map(t => {
-    const slip     = t.slippagePct != null ? `${t.slippagePct >= 0 ? '+' : ''}${t.slippagePct.toFixed(2)}%` : '—';
-    const dec      = t.decisionPrice ? `$${t.decisionPrice.toFixed(2)}` : '—';
-    const pnlColor = t.pnl >= 0 ? '#1a7f37' : '#cf222e';
-    const r        = t.rMultiple != null ? `${t.rMultiple.toFixed(2)}R` : '—';
+  // Fetch EOD close for each trade (historical — trade may be from earlier in the week)
+  const eodPrices = await Promise.all(
+    displayTrades.map(t => fetchDayClose(t.ticker, t.date))
+  );
+
+  const tradeRows = displayTrades.map((t, i) => {
+    const slip      = t.slippagePct != null ? `${t.slippagePct >= 0 ? '+' : ''}${t.slippagePct.toFixed(2)}%` : '—';
+    const dec       = t.decisionPrice ? `$${t.decisionPrice.toFixed(2)}` : '—';
+    const pnlColor  = t.pnl >= 0 ? '#1a7f37' : '#cf222e';
+    const r         = t.rMultiple != null ? `${t.rMultiple.toFixed(2)}R` : '—';
+    const eod       = eodPrices[i];
+    const qty       = t.dollarAmount && t.entryPrice ? t.dollarAmount / t.entryPrice : null;
+    const leftAmt   = eod && qty ? (eod - t.exitPrice) * qty : null;
+    const eodCell   = eod ? `$${eod.toFixed(2)}` : '—';
+    const leftColor = leftAmt == null ? '#555' : leftAmt > 0 ? '#cf222e' : '#1a7f37';
+    const leftCell  = leftAmt != null
+      ? `<span style="color:${leftColor};">${leftAmt >= 0 ? '+' : ''}$${leftAmt.toFixed(2)}</span>`
+      : '—';
     return `<tr style="border-bottom:1px solid #eee;">
       <td style="padding:5px 8px;color:#555;">${t.date}</td>
       <td style="padding:5px 8px;font-weight:bold;">${t.ticker}</td>
@@ -251,6 +283,8 @@ async function main() {
       <td style="padding:5px 8px;">$${t.entryPrice.toFixed(2)}</td>
       <td style="padding:5px 8px;color:${t.slippagePct > 1 ? '#cf222e' : '#555'};">${slip}</td>
       <td style="padding:5px 8px;">$${t.exitPrice.toFixed(2)}</td>
+      <td style="padding:5px 8px;">${eodCell}</td>
+      <td style="padding:5px 8px;">${leftCell}</td>
       <td style="padding:5px 8px;font-weight:bold;color:${pnlColor};">${t.pnl >= 0 ? '+' : ''}$${t.pnl.toFixed(2)} (${t.pnlPct.toFixed(1)}%)</td>
       <td style="padding:5px 8px;color:#555;">${r}</td>
     </tr>`;
@@ -268,6 +302,8 @@ ${displayTrades.length ? `
     <th style="padding:5px 8px;">Fill $</th>
     <th style="padding:5px 8px;">Slippage</th>
     <th style="padding:5px 8px;">Exit $</th>
+    <th style="padding:5px 8px;">EOD $</th>
+    <th style="padding:5px 8px;">Left on table</th>
     <th style="padding:5px 8px;">P&amp;L</th>
     <th style="padding:5px 8px;">R-Multiple</th>
   </thead>
