@@ -1526,5 +1526,15 @@ Design decisions that were changed, and the reasoning behind each removal. Kept 
 
 ---
 
-*Last updated: June 2026*
+### ORDER_PENDING stuck state — exit-daemon never confirmed fills (fixed July 2026)
+
+**What it was:** In live mode, the agent places an order at ~6:01am PT, polls Robinhood 3 times in the next few seconds for a fill, finds none (market not yet open), and leaves `state: ORDER_PENDING`. exit-daemon had no post-open retry — it logged "Waiting for PROTECTED state" every 45 seconds with zero stop/target management.
+
+**First live trade (META, July 1 2026):** Filled at $607.76 at market open. exit-daemon provided no stop/target protection for the entire day.
+
+**What was fixed:** exit-daemon `confirmFill()` now polls `get_equity_positions` (not `get_portfolio` which returns account summary, not holdings) after `PT.MARKET_OPEN` each poll cycle. Reads `average_buy_price`, re-anchors stop/target, transitions `ORDER_PENDING → PROTECTED`. Also added 20-second `AbortController` timeout on all Robinhood MCP `fetch` calls to prevent silent network hangs.
+
+---
+
+*Last updated: July 2026*
 *Built using Claude Code*

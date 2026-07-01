@@ -61,9 +61,11 @@ const PT = {
 
 // ─── Trade State Machine (mirrors agent.js — no shared lib to keep daemon standalone) ──
 const TRADE_STATES = {
-  PROTECTED:    'PROTECTED',
-  EXIT_PENDING: 'EXIT_PENDING',
-  CLOSED:       'CLOSED',
+  ORDER_PENDING: 'ORDER_PENDING',
+  FILLED:        'FILLED',
+  PROTECTED:     'PROTECTED',
+  EXIT_PENDING:  'EXIT_PENDING',
+  CLOSED:        'CLOSED',
 };
 
 function addStateHistory(pos, newState, meta = {}) {
@@ -192,10 +194,16 @@ async function rhPost(method, params, retrying = false) {
   const headers = { 'Content-Type': 'application/json' };
   if (rhToken)     headers['Authorization']   = `Bearer ${rhToken}`;
   if (rhSessionId) headers['mcp-session-id'] = rhSessionId;
-  const res = await fetch(RH_MCP_URL, {
-    method: 'POST', headers,
-    body: JSON.stringify({ jsonrpc: '2.0', id: Date.now(), method, params }),
-  });
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 20_000); // 20s timeout
+  let res;
+  try {
+    res = await fetch(RH_MCP_URL, {
+      method: 'POST', headers,
+      body: JSON.stringify({ jsonrpc: '2.0', id: Date.now(), method, params }),
+      signal: controller.signal,
+    });
+  } finally { clearTimeout(timer); }
   if (res.status === 401 && !retrying) {
     if (await refreshRobinhoodToken()) { rhSessionId = null; return rhPost(method, params, true); }
     return { error: 'Robinhood auth required' };
@@ -232,6 +240,53 @@ async function getRHAccountNumber() {
   const acct     = accounts.find(a => a.agentic_allowed) || accounts.find(a => a.is_default) || accounts[0];
   rhAccountNumber = acct?.account_number || null;
   return rhAccountNumber;
+}
+
+// ─── Fill Confirmation ────────────────────────────────────────────────────────
+// Called for ORDER_PENDING positions after market open. Polls Robinhood portfolio,
+// extracts actual fill price, re-anchors stop/target to fill, transitions to PROTECTED.
+async function confirmFill(pos, openData) {
+  if (DRY_RUN) return false; // dry-run orders never reach Robinhood
+  console.log(`  [${pos.ticker}] ORDER_PENDING — polling Robinhood for fill confirmation...`);
+  const acct = await getRHAccountNumber();
+  if (!acct) { console.warn(`  [${pos.ticker}] confirmFill: could not get account number`); return false; }
+
+  try {
+    const equityResult = await rhMCP('get_equity_positions', { account_number: acct });
+    const positions = (equityResult?.data?.positions || []).filter(p => parseFloat(p.quantity) > 0);
+    const rhPos = positions.find(p => (p.symbol || '').toUpperCase() === pos.ticker.toUpperCase());
+    if (!rhPos) {
+      console.log(`  [${pos.ticker}] not yet in equity positions — still awaiting fill`);
+      return false;
+    }
+
+    const fillPrice = parseFloat(rhPos.average_buy_price ?? 0);
+    if (!fillPrice || fillPrice <= 0) return false;
+
+    // Re-anchor stop/target to actual fill price using ATR%
+    const atrPct     = pos.atr14 ? parseFloat(pos.atr14) / fillPrice : 0.025;
+    const stopPrice  = parseFloat((fillPrice * (1 - atrPct)).toFixed(2));
+    const targetPrice = parseFloat((fillPrice * (1 + atrPct * 1.5)).toFixed(2));
+    const slippage   = +((fillPrice - pos.decisionPrice) / pos.decisionPrice * 100).toFixed(2);
+
+    addStateHistory(pos, TRADE_STATES.FILLED,    { fillPrice, slippage, note: 'confirmed from Robinhood portfolio' });
+    addStateHistory(pos, TRADE_STATES.PROTECTED, { stopPrice, targetPrice, anchoredToFill: true });
+
+    pos.entryPrice   = fillPrice;
+    pos.stopPrice    = stopPrice;
+    pos.targetPrice  = targetPrice;
+    pos.slippagePct  = slippage;
+
+    const livePos = openData.positions.find(p => p.ticker === pos.ticker);
+    if (livePos) Object.assign(livePos, pos);
+    saveOpenPositions(openData.positions);
+
+    console.log(`  ✅ [${pos.ticker}] Fill confirmed @ $${fillPrice} (slippage ${slippage > 0 ? '+' : ''}${slippage}%) — stop $${stopPrice} | target $${targetPrice}`);
+    return true;
+  } catch (e) {
+    console.warn(`  [${pos.ticker}] confirmFill error: ${e.message}`);
+    return false;
+  }
 }
 
 // ─── Market Sell (DRY_RUN safe) ───────────────────────────────────────────────
@@ -418,6 +473,14 @@ async function main() {
     const updatedPositions = [...openData.positions];
     for (const pos of updatedPositions) {
       // Item 35: stop/target only valid once PROTECTED. If no state field (legacy records), treat as PROTECTED.
+      if (pos.state === TRADE_STATES.ORDER_PENDING) {
+        if (ptNow >= PT.MARKET_OPEN) {
+          await confirmFill(pos, openData);
+        } else {
+          console.log(`  [${pos.ticker}] ORDER_PENDING — market not yet open, waiting`);
+        }
+        continue;
+      }
       if (pos.state && pos.state !== TRADE_STATES.PROTECTED) {
         console.log(`  [${pos.ticker}] Waiting for PROTECTED state (current: ${pos.state}) — skipping stop/target`);
         continue;

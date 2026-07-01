@@ -1542,5 +1542,15 @@ Design decisions that were changed, and the reasoning behind each removal. Kept 
 
 ---
 
-*Last updated: June 2026*
+### ORDER_PENDING stuck state — exit-daemon never confirmed fills (fixed July 2026)
+
+**What it was:** In DRY_RUN mode, agent.js immediately synthetic-fills the position (sets `state: FILLED → PROTECTED`) before writing to `trades-open.json`. In live mode, the order is placed at ~6:01am PT but fills at market open (6:30am PT). The agent writes `state: ORDER_PENDING` to `trades-open.json` and then polls Robinhood for up to 3 attempts in the seconds immediately after order submission — before the market is open. Those 3 polls always returned no position (order not yet filled), and the agent gave up and left the state as `ORDER_PENDING`. exit-daemon had no logic to retry fill confirmation post-open; it simply logged "Waiting for PROTECTED state" and skipped stop/target management entirely.
+
+**Why it was wrong:** The first live trade (META, July 1 2026) filled at $607.76 at market open. exit-daemon logged "Waiting for PROTECTED state (current: ORDER_PENDING)" every 45 seconds for hours with no stop/target protection active. If META had dropped 10% intraday, the daemon would have force-closed at 12:45pm with no stop ever triggered.
+
+**What was fixed:** exit-daemon now checks `ORDER_PENDING` positions in each poll cycle after `PT.MARKET_OPEN` (6:30am PT). `confirmFill()` calls `get_equity_positions` (not `get_portfolio` which returns account summary, not positions), finds the broker position by symbol, reads `average_buy_price`, re-anchors stop/target using `atr14/decisionPrice` as stop distance, and transitions the position from `ORDER_PENDING → FILLED → PROTECTED` in one step. A 20-second `AbortController` timeout was added to all Robinhood MCP `fetch` calls to prevent silent hangs. The fix also corrects the MCP tool: `get_portfolio` returns `{data: {equity_value, cash, ...}}` — individual positions require `get_equity_positions` which returns `{data: {positions: [{symbol, average_buy_price, quantity}]}}`.
+
+---
+
+*Last updated: July 2026*
 *Built by Alvint Sheth using Claude Code*
