@@ -188,7 +188,7 @@ async function screenTicker(ticker) {
     preMarketPrice: +preMarketPrice.toFixed(2),
     prevClose:      +prevClose.toFixed(2),
     preMarketBars:  preMarketBars.length,
-    score:          Math.abs(gapPct), // rank by gap magnitude
+    score:          Math.abs(gapPct), // rank by gap magnitude (gap-downs filtered out at candidate selection)
   };
 }
 
@@ -213,18 +213,21 @@ async function main() {
 
   log(`Screened ${universe.length} tickers → ${results.length} with pre-market activity`);
 
-  // Sort by score (gap magnitude × RVOL), take top 10
-  results.sort((a, b) => b.score - a.score);
-  const candidates = results.slice(0, 10);
+  // Split into gap-ups and gap-downs for context, then take top 10 gap-ups only
+  const gapUps   = results.filter(r => r.gapPct > 0).sort((a, b) => b.score - a.score);
+  const gapDowns = results.filter(r => r.gapPct < 0).sort((a, b) => b.score - a.score);
+  const candidates = gapUps.slice(0, 10);
+
+  log(`Gap-ups: ${gapUps.length} | Gap-downs: ${gapDowns.length} (long-only — gap-downs excluded from candidates)`);
 
   // Log top candidates
   if (candidates.length) {
-    log(`Top candidates:`);
+    log(`Top gap-up candidates:`);
     for (const c of candidates) {
-      log(`  ${c.ticker.padEnd(6)} gap=${c.gapPct > 0 ? '+' : ''}${c.gapPct}%  RVOL=${c.rvol ?? 'n/a'}x  pre=$${c.preMarketPrice}  bars=${c.preMarketBars}`);
+      log(`  ${c.ticker.padEnd(6)} gap=+${c.gapPct}%  RVOL=${c.rvol ?? 'n/a'}x  pre=$${c.preMarketPrice}  bars=${c.preMarketBars}`);
     }
   } else {
-    log(`No candidates with pre-market activity found`);
+    log(`No gap-up candidates found`);
   }
 
   // Save output
@@ -233,6 +236,8 @@ async function main() {
     generatedAt:  new Date().toISOString(),
     universeSize: universe.length,
     screened:     results.length,
+    gapUpCount:   gapUps.length,
+    gapDownCount: gapDowns.length,
     candidates,
   };
 

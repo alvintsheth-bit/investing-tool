@@ -1855,9 +1855,10 @@ async function runScan() {
   const outPath    = join(OUTPUT_DIR, `recommendations-${today}.md`);
   const screener   = loadScreenerCandidates();
   const screenerSummary = screener?.candidates?.length
-    ? `Screener: ${screener.candidates.length} candidates from ${screener.universeSize} stocks — ` +
-      screener.candidates.slice(0, 3).map(c => `${c.ticker} ${c.gapPct > 0 ? '+' : ''}${c.gapPct}%`).join(', ')
-    : 'Screener: no candidates (fallback to watchlist)';
+    ? `Screener: ${screener.candidates.length} gap-up candidates from ${screener.universeSize} stocks` +
+      (screener.gapDownCount ? ` (${screener.gapDownCount} gap-downs excluded)` : '') + ' — ' +
+      screener.candidates.slice(0, 3).map(c => `${c.ticker} +${c.gapPct}%`).join(', ')
+    : `Screener: no gap-up candidates (${screener?.gapDownCount ?? 0} gap-downs excluded — long-only)`;
   const header = CIRCUIT.tradesExecuted.length
     ? `# Scan Report — ${today}\n_${screenerSummary}_\n\n## Trades\n${CIRCUIT.tradesExecuted.map(t => `- ${t.side.toUpperCase()} $${t.dollarAmount} ${t.ticker} @ $${t.entryPrice} | score=${t.setupScore?.toFixed(2)}`).join('\n')}\n\n`
     : `# Scan Report — ${today}\n_${screenerSummary}_\n\n`;
