@@ -239,9 +239,40 @@ async function main() {
   const pnlStr  = displayTrades.length ? fmt$(totalPnl) : 'no trades';
   const subject = `📊 Weekly Report ${monday} | ${pnlStr} | ${wins.length}W/${losses.length}L | SPY ${spy ? fmtPct(spy.pct) : '?'}`;
 
-  const html = `<html><body style="font-family:monospace;max-width:700px;margin:auto;padding:24px;background:#fff;">
+  const tradeRows = displayTrades.map(t => {
+    const slip     = t.slippagePct != null ? `${t.slippagePct >= 0 ? '+' : ''}${t.slippagePct.toFixed(2)}%` : '—';
+    const dec      = t.decisionPrice ? `$${t.decisionPrice.toFixed(2)}` : '—';
+    const pnlColor = t.pnl >= 0 ? '#1a7f37' : '#cf222e';
+    const r        = t.rMultiple != null ? `${t.rMultiple.toFixed(2)}R` : '—';
+    return `<tr style="border-bottom:1px solid #eee;">
+      <td style="padding:5px 8px;color:#555;">${t.date}</td>
+      <td style="padding:5px 8px;font-weight:bold;">${t.ticker}</td>
+      <td style="padding:5px 8px;">${dec}</td>
+      <td style="padding:5px 8px;">$${t.entryPrice.toFixed(2)}</td>
+      <td style="padding:5px 8px;color:${t.slippagePct > 1 ? '#cf222e' : '#555'};">${slip}</td>
+      <td style="padding:5px 8px;">$${t.exitPrice.toFixed(2)}</td>
+      <td style="padding:5px 8px;font-weight:bold;color:${pnlColor};">${t.pnl >= 0 ? '+' : ''}$${t.pnl.toFixed(2)} (${t.pnlPct.toFixed(1)}%)</td>
+      <td style="padding:5px 8px;color:#555;">${r}</td>
+    </tr>`;
+  }).join('');
+
+  const html = `<html><body style="font-family:monospace;max-width:800px;margin:auto;padding:24px;background:#fff;">
 <h2 style="margin-bottom:4px;">📊 Weekly P&L — ${monday} to ${friday}</h2>
 <p style="color:#888;margin-top:0;">${DRY_RUN ? '🔷 DRY RUN — paper trading' : '🚨 LIVE'}</p>
+${displayTrades.length ? `
+<table style="width:100%;border-collapse:collapse;margin:16px 0;font-size:13px;">
+  <thead><tr style="background:#f6f8fa;text-align:left;">
+    <th style="padding:5px 8px;">Date</th>
+    <th style="padding:5px 8px;">Ticker</th>
+    <th style="padding:5px 8px;">Decision $</th>
+    <th style="padding:5px 8px;">Fill $</th>
+    <th style="padding:5px 8px;">Slippage</th>
+    <th style="padding:5px 8px;">Exit $</th>
+    <th style="padding:5px 8px;">P&amp;L</th>
+    <th style="padding:5px 8px;">R-Multiple</th>
+  </thead>
+  <tbody>${tradeRows}</tbody>
+</table>` : '<p style="color:#888;">No trades this week.</p>'}
 <pre style="white-space:pre-wrap;line-height:1.6;font-size:13px;">${reportText.replace(/</g,'&lt;').replace(/>/g,'&gt;')}</pre>
 </body></html>`;
 
