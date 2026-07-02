@@ -1696,9 +1696,12 @@ function buildEODPrompt(closedTrades, openPositions, benchmarks = {}) {
 ${benchLine}
 
 ## Closed Trades Today
-${closedTrades.length ? closedTrades.map(t =>
-  `${t.ticker}: ${t.side?.toUpperCase()} $${t.dollarAmount} @ $${t.entryPrice} → exit $${t.exitPrice ?? '?'} | P&L: ${t.pnl !== null ? (t.pnl >= 0 ? '+' : '') + '$' + t.pnl?.toFixed(2) + ' (' + t.pnlPct?.toFixed(1) + '%)' : 'pending'} | Exit: ${t.exitReason || 'unknown'}`
-).join('\n') : '(no trades today)'}
+Note: positions are DOLLAR-DENOMINATED ($${115} fixed pilot size = fractional shares, NOT whole shares). Use the P&L figures provided — do not recalculate from prices.
+${closedTrades.length ? closedTrades.map(t => {
+  const qty = (t.dollarAmount / t.entryPrice).toFixed(4);
+  const pnl = t.pnl !== null ? `${t.pnl >= 0 ? '+' : ''}$${t.pnl?.toFixed(2)} (${t.pnlPct?.toFixed(1)}%)` : 'pending';
+  return `${t.ticker}: ${t.side?.toUpperCase()} ${qty} fractional shares ($${t.dollarAmount} notional) | fill $${t.entryPrice} → exit $${t.exitPrice ?? '?'} | P&L: ${pnl} | R: ${t.rMultiple ?? '?'} | Exit: ${t.exitReason || 'unknown'}`;
+}).join('\n') : '(no trades today)'}
 
 ## Still Open (should have been force-closed at 12:45pm PT)
 ${openPositions.length ? openPositions.map(p => `${p.ticker}: entry $${p.entryPrice}, stop $${p.stopPrice}, target $${p.targetPrice}`).join('\n') : '(none)'}
