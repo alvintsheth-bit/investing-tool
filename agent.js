@@ -606,15 +606,17 @@ async function yahooChart(symbol, range = '5d', interval = '1d') {
   } catch { return null; }
 }
 
-async function fetchDayClose(symbol, date) {
+async function fetchDayStats(symbol, date) {
   try {
     const result = await yahooChart(symbol, '30d', '1d');
     if (!result) return null;
     const timestamps = result.timestamp || [];
-    const closes     = result.indicators?.quote?.[0]?.close || [];
+    const quotes     = result.indicators?.quote?.[0] || {};
+    const closes = quotes.close || [];
+    const highs  = quotes.high  || [];
     for (let i = 0; i < timestamps.length; i++) {
       if (new Date(timestamps[i] * 1000).toISOString().split('T')[0] === date && closes[i] != null)
-        return closes[i];
+        return { close: closes[i], high: highs[i] ?? null };
     }
     return null;
   } catch { return null; }
@@ -1738,9 +1740,9 @@ async function sendEODEmail(reportText, closedTrades, benchmarks = {}) {
   const benchStr = `SPY ${fmtB(benchmarks.spy)} | QQQ ${fmtB(benchmarks.qqq)} | IWM ${fmtB(benchmarks.iwm)}`;
   const subject  = `📈 EOD ${today} | ${pnlStr} | ${wins}W/${closedTrades.length - wins}L | ${benchStr}`;
 
-  // Fetch EOD close for each trade in parallel (after market close this is the day's final price)
-  const eodPrices = await Promise.all(
-    closedTrades.map(t => fetchDayClose(t.ticker, t.date || today))
+  // Fetch EOD close + day high for each trade in parallel
+  const dayStats = await Promise.all(
+    closedTrades.map(t => fetchDayStats(t.ticker, t.date || today))
   );
 
   const tradeRows = closedTrades.map((t, i) => {
@@ -1749,10 +1751,12 @@ async function sendEODEmail(reportText, closedTrades, benchmarks = {}) {
     const pnlColor = t.pnl >= 0 ? '#1a7f37' : '#cf222e';
     const pnlCell  = `<span style="color:${pnlColor};font-weight:bold;">${t.pnl >= 0 ? '+' : ''}$${t.pnl.toFixed(2)} (${t.pnlPct.toFixed(1)}%)</span>`;
     const r        = t.rMultiple != null ? `${t.rMultiple.toFixed(2)}R` : '—';
-    const eod      = eodPrices[i];
+    const stats    = dayStats[i];
     const qty      = t.dollarAmount && t.entryPrice ? t.dollarAmount / t.entryPrice : null;
-    const leftAmt  = eod && qty ? (eod - t.exitPrice) * qty : null;
-    const eodCell  = eod ? `$${eod.toFixed(2)}` : '—';
+    // Left on table uses day high — the true maximum achievable
+    const leftAmt  = stats?.high && qty ? (stats.high - t.exitPrice) * qty : null;
+    const eodCell  = stats?.close ? `$${stats.close.toFixed(2)}` : '—';
+    const highCell = stats?.high  ? `$${stats.high.toFixed(2)}`  : '—';
     const leftColor = leftAmt == null ? '#555' : leftAmt > 0 ? '#cf222e' : '#1a7f37';
     const leftCell  = leftAmt != null
       ? `<span style="color:${leftColor};">${leftAmt >= 0 ? '+' : ''}$${leftAmt.toFixed(2)}</span>`
@@ -1763,6 +1767,7 @@ async function sendEODEmail(reportText, closedTrades, benchmarks = {}) {
       <td style="padding:6px 10px;">$${t.entryPrice.toFixed(2)}</td>
       <td style="padding:6px 10px;color:${t.slippagePct > 1 ? '#cf222e' : '#555'};">${slip}</td>
       <td style="padding:6px 10px;">$${t.exitPrice.toFixed(2)}</td>
+      <td style="padding:6px 10px;color:#555;">${highCell}</td>
       <td style="padding:6px 10px;">${eodCell}</td>
       <td style="padding:6px 10px;">${leftCell}</td>
       <td style="padding:6px 10px;">${pnlCell}</td>
@@ -1782,6 +1787,7 @@ ${closedTrades.length ? `
     <th style="padding:6px 10px;">Fill $</th>
     <th style="padding:6px 10px;">Slippage</th>
     <th style="padding:6px 10px;">Exit $</th>
+    <th style="padding:6px 10px;">Day High</th>
     <th style="padding:6px 10px;">EOD $</th>
     <th style="padding:6px 10px;">Left on table</th>
     <th style="padding:6px 10px;">P&amp;L</th>
