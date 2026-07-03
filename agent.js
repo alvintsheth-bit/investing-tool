@@ -48,12 +48,14 @@ function getPTDateParts() {
 
 const { dateStr: today, dow: dayOfWeek } = getPTDateParts();
 
-// ─── Pilot Mode Config (item 20) ─────────────────────────────────────────────
-// PILOT_MODE=true: 1 position, 10% sizing, ~0.25% max loss per trade
-// Set PILOT_MODE=false in .env once 20-30 clean live trades are verified
-const PILOT_MODE    = process.env.PILOT_MODE !== 'false'; // default: true
-const MAX_POSITIONS = PILOT_MODE ? 1 : 2;
-const POSITION_PCT  = PILOT_MODE ? 0.10 : 0.175;
+// ─── Position Config ──────────────────────────────────────────────────────────
+// Up to 4 concurrent positions, $125 fixed per trade.
+// Max deployed: $500. Daily stop at -1.5% SOD (~$17) comfortably exceeds worst-case
+// 4 simultaneous stops (~$8 total at 1R each).
+const PILOT_MODE       = process.env.PILOT_MODE !== 'false'; // kept for prompt text
+const MAX_POSITIONS    = 4;
+const POSITION_DOLLARS = 125;
+const POSITION_PCT     = POSITION_DOLLARS / 1150; // approx, kept for log lines
 
 const SOD_BALANCE_FILE = join(OUTPUT_DIR, 'sod-balance.json');
 
@@ -355,8 +357,8 @@ function checkCircuitBreaker(currentBalance, totalDailyPnl, weekStartBalance) {
   return { blocked: false };
 }
 
-function computePositionDollars(balance) {
-  return Math.round(balance * POSITION_PCT); // 10% pilot, 17.5% steady-state
+function computePositionDollars(_balance) {
+  return POSITION_DOLLARS; // fixed $125 per position
 }
 
 function checkMaxConcurrent(openPositions) {
@@ -1080,6 +1082,7 @@ const tools = [
         marketContext: { type: 'string', description: 'VIX, Fear & Greed, sector context at entry' },
         samAlignment:  { type: 'string', description: 'Sam\'s stance on this ticker (if checked)' },
         catalystType:  { type: 'string', enum: ['earnings_beat','earnings_miss','guidance_raise','analyst_upgrade','fda_news','ma','insider_purchase','macro','sector_sympathy','notable_mention','product_launch','regulatory','technical'], description: 'Primary catalyst driving the gap. Used for edge validation over time.' },
+        sector:        { type: 'string', description: 'GICS sector of the ticker (e.g. "Technology", "Consumer Discretionary"). Required for sector concentration guard — max 2 concurrent positions per sector.' },
         regime: {
           type: 'object',
           description: 'Market regime snapshot at entry — populated from Phase 1 get_fear_greed_vix output. Used to slice edge by regime after 100+ trades.',
@@ -1090,6 +1093,7 @@ const tools = [
             fearGreedBucket: { type: 'string', enum: ['extreme_fear','fear','neutral','greed','extreme_greed'] },
             spyVs50dma:      { type: 'string', enum: ['above','below'], description: 'SPY relative to its 50-day MA' },
             qqqVs50dma:      { type: 'string', enum: ['above','below'], description: 'QQQ relative to its 50-day MA' },
+            spyChangePct:    { type: 'number', description: 'SPY % change today (from get_fear_greed_vix indices). Used to flag market-driven days where |change| > 1.5%.' },
           },
         },
       },
@@ -1187,7 +1191,7 @@ async function executeTool(name, input) {
       if (cbPersist.tripped) return { blocked: true, reason: `Circuit breaker: ${cbPersist.reason} — reset with: node agent.js reset-circuit` };
       if (CIRCUIT.tripped) return { blocked: true, reason: 'Circuit breaker tripped this session.' };
 
-      const { ticker, side, setupScore, rationale, signals, targetPrice: rawTarget, stopPrice: rawStop, atr14, marketContext, samAlignment, catalystType, regime } = input;
+      const { ticker, side, setupScore, rationale, signals, targetPrice: rawTarget, stopPrice: rawStop, atr14, marketContext, samAlignment, catalystType, sector, regime } = input;
 
       // ── Item 35: initialize position record with state machine ────────────────
       const posRecord = { ticker, side, state: TRADE_STATES.CANDIDATE, stateHistory: [] };
@@ -1213,6 +1217,12 @@ async function executeTool(name, input) {
       const openData = loadOpenPositions();
       const concurrentCheck = checkMaxConcurrent(openData.positions);
       if (concurrentCheck.blocked) return concurrentCheck;
+
+      // Sector concentration guard: max 2 concurrent positions per GICS sector
+      if (sector) {
+        const sectorCount = openData.positions.filter(p => p.sector === sector).length;
+        if (sectorCount >= 2) return { blocked: true, reason: `Sector concentration: already ${sectorCount} open positions in ${sector} — max 2 per sector` };
+      }
 
       // ── Get portfolio once — used for both circuit breaker and sizing ─────────
       const portResult = acct ? await rhMCP('get_portfolio', { account_number: acct }) : null;
@@ -1292,7 +1302,10 @@ async function executeTool(name, input) {
         targetPrice:   rawTarget || parseFloat((decisionPrice * (1 + 0.0375)).toFixed(2)),
         atr14:  atr14  || null,
         signals: signals || {},
-        setupScore, rationale, marketContext, samAlignment, catalystType: catalystType || null, regime: regime || null,
+        setupScore, rationale, marketContext, samAlignment, catalystType: catalystType || null,
+        sector: sector || null,
+        marketDrivenDay: Math.abs(parseFloat(regime?.spyChangePct ?? 0)) > 1.5,
+        regime: regime || null,
         entryTime:  new Date().toISOString(),
         entryPrice: decisionPrice, // updated to confirmed fill below
         slippagePct: 0,
@@ -1590,7 +1603,12 @@ Research yesterday's watchlist tickers and use get_premarket_data to check for a
   return `You are a personal day-trading agent for Alvint. Today is ${today}. DAY TRADE session — all positions CLOSED by 12:45pm PT (exit-daemon + force-close failsafe).
 LONG ONLY — no short positions under any circumstances.
 ${DRY_RUN ? '\n⚠️  DRY RUN MODE — orders logged but NOT submitted to Robinhood. Research and score as if live.\n' : ''}
-${PILOT_MODE ? `\n🧪 PILOT MODE — 1 position max, ${positionSize} fixed size, ~0.25% max planned loss per trade. Scale to steady-state after 20-30 clean live trades.\n` : ''}
+
+MULTI-POSITION MODE — up to ${MAX_POSITIONS} concurrent positions, ${positionSize} each.
+Research ALL screener candidates. Trade every one that qualifies (score ≥ 0.45) — do NOT stop after the first.
+Rank by setup_score descending. Apply sector diversity rule (max 2 per sector). place_trade returns
+blocked=true with reason when limits are reached — that is the gate, not you stopping early.
+
 ${buildLearningsContext()}
 
 ${screenerBlock}
@@ -1617,6 +1635,7 @@ HARD EXCLUDES (never trade):
      is unreliable at 6am PT; null data ≠ confirmed low RVOL. Only hard-block if RVOL is
      explicitly confirmed <1x via FMP data. Note data-unavailable cases in rationale.)
   ✗ Already at ${MAX_POSITIONS} open position(s)
+  ✗ 3rd+ position in same GICS sector (max 2 per sector — pass sector in place_trade)
   ✗ 3 consecutive losses (manual review required)
 
 SIGNAL SCORING (setup_score — equal-weight until 60+ completed trades):
@@ -1668,17 +1687,19 @@ Phase 4 — Sam validation (only after independent scoring):
   Sam runs long-dated options positions (months to years). His hedges say nothing about
   whether a stock is gapping 3% this morning with a real catalyst. Keep them separate.
 
-Phase 5 — Execute:
-  place_trade → only if setup_score ≥ 0.45 AND premarket_gap_up AND earnings check passed
-    rvol_spike: include if confirmed >2x — but null/unavailable data is NOT a blocker, note it in rationale
-    catalystType is REQUIRED — classify the primary driver:
-    earnings_beat | earnings_miss | guidance_raise | analyst_upgrade | fda_news |
-    ma | insider_purchase | macro | sector_sympathy | notable_mention | product_launch | regulatory | technical
-    regime is REQUIRED — populate from Phase 1 get_fear_greed_vix output:
-    { vixLevel, vixBucket, fearGreedScore, fearGreedBucket, spyVs50dma, qqqVs50dma }
-    Use the VIX and Fear & Greed values you retrieved in Phase 1. For spyVs50dma/qqqVs50dma,
-    use sector rotation data or note "above" if pre-market is broadly green.
-  save_tomorrow_watchlist → tickers scoring 0.35–0.45
+Phase 5 — Execute (work through ALL candidates):
+  For each qualifying candidate (score ≥ 0.45, premarket_gap_up=true, earnings cleared):
+    call place_trade — one call per ticker, highest score first.
+    place_trade will return blocked=true if MAX_POSITIONS or sector limit is reached — that ends trading.
+    Do NOT self-censor after the first trade. Let the gate in place_trade stop you.
+  Required fields in every place_trade call:
+    catalystType — earnings_beat | earnings_miss | guidance_raise | analyst_upgrade | fda_news |
+      ma | insider_purchase | macro | sector_sympathy | notable_mention | product_launch | regulatory | technical
+    sector — GICS sector string (e.g. "Technology", "Consumer Discretionary")
+    regime — { vixLevel, vixBucket, fearGreedScore, fearGreedBucket, spyVs50dma, qqqVs50dma, spyChangePct }
+      spyChangePct: SPY % change from get_fear_greed_vix indices (used to flag market-driven days)
+    rvol_spike: include if confirmed >2x — null/unavailable is NOT a blocker, note in rationale
+  save_tomorrow_watchlist → tickers scoring 0.35–0.45 that did not trade
 
 ═══════════════════════════════════════════════════════════════
 NASDAQ CORRECTION/RALLY REFERENCE
@@ -1698,7 +1719,7 @@ function buildEODPrompt(closedTrades, openPositions, benchmarks = {}) {
 ${benchLine}
 
 ## Closed Trades Today
-Note: positions are DOLLAR-DENOMINATED ($${115} fixed pilot size = fractional shares, NOT whole shares). Use the P&L figures provided — do not recalculate from prices.
+Note: positions are DOLLAR-DENOMINATED ($${POSITION_DOLLARS} fixed size = fractional shares, NOT whole shares). Use the P&L figures provided — do not recalculate from prices.
 ${closedTrades.length ? closedTrades.map(t => {
   const qty = (t.dollarAmount / t.entryPrice).toFixed(4);
   const pnl = t.pnl !== null ? `${t.pnl >= 0 ? '+' : ''}$${t.pnl?.toFixed(2)} (${t.pnlPct?.toFixed(1)}%)` : 'pending';
