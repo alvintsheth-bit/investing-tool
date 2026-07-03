@@ -252,15 +252,19 @@ async function confirmFill(pos, openData) {
   if (!acct) { console.warn(`  [${pos.ticker}] confirmFill: could not get account number`); return false; }
 
   try {
-    const equityResult = await rhMCP('get_equity_positions', { account_number: acct });
-    const positions = (equityResult?.data?.positions || []).filter(p => parseFloat(p.quantity) > 0);
-    const rhPos = positions.find(p => (p.symbol || '').toUpperCase() === pos.ticker.toUpperCase());
-    if (!rhPos) {
-      console.log(`  [${pos.ticker}] not yet in equity positions — still awaiting fill`);
+    const ordersResult = await rhMCP('get_equity_orders', {
+      account_number: acct,
+      symbol:         pos.ticker,
+      placed_agent:   'agentic',
+      state:          'filled',
+    });
+    const buyOrder = (ordersResult?.data?.orders || []).find(o => o.side === 'buy');
+    if (!buyOrder) {
+      console.log(`  [${pos.ticker}] no agentic filled buy order yet — still awaiting fill`);
       return false;
     }
 
-    const fillPrice = parseFloat(rhPos.average_buy_price ?? 0);
+    const fillPrice = parseFloat(buyOrder.average_price ?? 0);
     if (!fillPrice || fillPrice <= 0) return false;
 
     // Re-anchor stop/target to actual fill price using ATR%
