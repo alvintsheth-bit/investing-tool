@@ -42,7 +42,7 @@ A fully automated personal **day-trading** agent that runs a complete intraday c
 
 - **Scrapes** a paid financial advisory service daily at 5:30am for trade alerts, watchlist, and briefings. Rebuilds the full knowledge base every Sunday
 - **Scans** pre-market gappers at 6:00am (30 min before open), scoring candidates using a logistic regression model trained on historical signal outcomes
-- **Executes** fractional-share, dollar-denominated market orders on Robinhood's Agentic Trading sub-account — pilot mode: 1 position max, 10% sizing; full mode: 2 positions, 17.5%
+- **Executes** fractional-share, dollar-denominated market orders on Robinhood's Agentic Trading sub-account — up to 4 concurrent positions, $125 fixed per trade ($500 max deployed)
 - **Monitors** open positions continuously via exit-daemon (45-second poll loop, 6:25am–1pm PT) — exits on stop/target hits or thesis-break events (Haiku judges borderline cases)
 - **Force-closes** all open positions at 12:45pm PT (failsafe only — daemon handles primary exits; early-close days: 9:45am)
 - **Trains** a logistic regression model at EOD on all closed trades (features: 10 signal binaries + continuous values, L2 regularized, 80/20 blended with prior day's weights)
@@ -514,7 +514,7 @@ Gate 6: Reconcile positions (second check, immediately before order)?
 ├── MISMATCH → alert email + blocked: "Reconciliation mismatch"
 └── OK → continue
 
-Gate 7: Already at max concurrent positions (1 pilot / 2 steady-state)?
+Gate 7: Already at max concurrent positions (MAX_POSITIONS=4)?
 ├── YES → blocked: "Already at max positions"
 └── NO  → continue
 
@@ -696,18 +696,18 @@ Trained daily at EOD using L2-regularized logistic regression in pure JavaScript
 **Thresholds:**
 | setup_score | Action |
 |-------------|--------|
-| ≥ 0.45 | Enter trade (pilot: 1 position / 10% sizing) |
+| ≥ 0.45 | Enter trade ($125 fixed, up to 4 concurrent) |
 | 0.35–0.45 | Shadow-log only via `log_rejected_candidate` |
 | < 0.35 | Avoid |
 
-Model-driven variable sizing (based on score confidence) is reserved until 200 live trades are logged (`isLive: true` field). Before that, all qualifying trades use flat pilot sizing.
+Model-driven variable sizing (based on score confidence) is reserved until 200 live trades are logged (`isLive: true` field). Before that, all qualifying trades use flat $125 sizing.
 
 **Hard excludes (regardless of score):**
 - Earnings today before close
 - `premarket_gap_up = false` (code gate — no exceptions)
 - `rvol_spike = false` when RVOL explicitly confirmed <1× (scoring penalty; null/unavailable data is NOT a block)
 - Past 10am PT entry window
-- Already at max concurrent positions (pilot: 1, full: 2)
+- Already at max concurrent positions (MAX_POSITIONS=4)
 - 3 consecutive losses (paused for manual review)
 - Broker reconciliation mismatch
 
@@ -790,15 +790,14 @@ This creates a permanent, auditable record of every trading decision — enablin
 
 All limits pull live account balance dynamically at the start of each run. Cannot be overridden by Claude.
 
-### Position Size (Pilot Mode, default)
+### Position Size
 ```
-PILOT_MODE=true  → 1 position max, 10% of buying_power per trade
-PILOT_MODE=false → 2 positions max, 17.5% of buying_power per trade
+MAX_POSITIONS=4, POSITION_DOLLARS=125 → up to 4 concurrent, $125 fixed per trade ($500 max deployed)
 ```
 Sized from **settled buying power** (not total equity) to avoid good-faith-violation risk from unsettled T+1 proceeds. Pre-flight logs a warning if buying_power < 90% of equity. Dollar-denominated → fractional quantity = dollarAmount / price.
 
 ### Max Concurrent Positions
-`checkMaxConcurrent(openPositions)` — blocks new entries if at/above limit (1 in pilot, 2 in full).
+`checkMaxConcurrent(openPositions)` — blocks new entries if at/above MAX_POSITIONS (4). Each trade also records `sector`, `sharedSector` (true if another open position is in the same GICS sector), and `marketDrivenDay` (true if |SPY change| > 1.5%) for correlation analysis at N=60.
 
 ### Daily Loss Limit (1.5% of SOD balance)
 ```
