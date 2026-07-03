@@ -1218,11 +1218,11 @@ async function executeTool(name, input) {
       const concurrentCheck = checkMaxConcurrent(openData.positions);
       if (concurrentCheck.blocked) return concurrentCheck;
 
-      // Sector concentration guard: max 2 concurrent positions per GICS sector
-      if (sector) {
-        const sectorCount = openData.positions.filter(p => p.sector === sector).length;
-        if (sectorCount >= 2) return { blocked: true, reason: `Sector concentration: already ${sectorCount} open positions in ${sector} — max 2 per sector` };
-      }
+      // Sector correlation tag: flag when another concurrent position shares this sector.
+      // Not a block — just marks the trade so sector-clustered days can be discounted at N=60.
+      const sharedSector = sector
+        ? openData.positions.some(p => p.sector === sector)
+        : false;
 
       // ── Get portfolio once — used for both circuit breaker and sizing ─────────
       const portResult = acct ? await rhMCP('get_portfolio', { account_number: acct }) : null;
@@ -1304,6 +1304,7 @@ async function executeTool(name, input) {
         signals: signals || {},
         setupScore, rationale, marketContext, samAlignment, catalystType: catalystType || null,
         sector: sector || null,
+        sharedSector: sharedSector,
         marketDrivenDay: Math.abs(parseFloat(regime?.spyChangePct ?? 0)) > 1.5,
         regime: regime || null,
         entryTime:  new Date().toISOString(),
@@ -1635,7 +1636,6 @@ HARD EXCLUDES (never trade):
      is unreliable at 6am PT; null data ≠ confirmed low RVOL. Only hard-block if RVOL is
      explicitly confirmed <1x via FMP data. Note data-unavailable cases in rationale.)
   ✗ Already at ${MAX_POSITIONS} open position(s)
-  ✗ 3rd+ position in same GICS sector (max 2 per sector — pass sector in place_trade)
   ✗ 3 consecutive losses (manual review required)
 
 SIGNAL SCORING (setup_score — equal-weight until 60+ completed trades):
