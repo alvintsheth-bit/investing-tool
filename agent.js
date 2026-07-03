@@ -1117,6 +1117,33 @@ const tools = [
     },
   },
   {
+    name: 'log_daily_candidates',
+    description: 'Log all screener candidates evaluated today with ranks, signal breakdowns, and composite scores. Call once at the end of the session after all trades and shadow logs are done.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        candidates: {
+          type: 'array',
+          items: {
+            type: 'object',
+            properties: {
+              rank:           { type: 'number', description: 'Agent rank by composite score (1 = highest score)' },
+              screenerRank:   { type: 'number', description: 'Screener rank by gap% (1 = largest gap)' },
+              ticker:         { type: 'string' },
+              gapPct:         { type: 'number' },
+              compositeScore: { type: 'number' },
+              signals:        { type: 'object' },
+              action:         { type: 'string', description: 'traded | shadow_logged | skipped | hard_excluded' },
+              reason:         { type: 'string' },
+            },
+            required: ['rank', 'ticker', 'compositeScore', 'action'],
+          },
+        },
+      },
+      required: ['candidates'],
+    },
+  },
+  {
     name: 'save_tomorrow_watchlist',
     description: 'Save stocks to watch tomorrow morning for pre-market gap scan.',
     input_schema: {
@@ -1446,6 +1473,13 @@ async function executeTool(name, input) {
       console.log(`  📝 Shadow-logged rejected candidate: ${ticker} (score=${setupScore?.toFixed(2)}, ${reason})`);
       return { logged: true, ticker };
     }
+    case 'log_daily_candidates': {
+      const { candidates } = input;
+      const outPath = join(OUTPUT_DIR, `candidates-${today}.json`);
+      atomicWrite(outPath, { date: today, generatedAt: new Date().toISOString(), candidates });
+      console.log(`  📊 Logged ${candidates.length} daily candidates to candidates-${today}.json`);
+      return { logged: true, count: candidates.length };
+    }
     case 'save_tomorrow_watchlist': {
       const { watchlist } = input;
       atomicWrite(WATCHLIST_FILE, { date: today, watchlist });
@@ -1700,6 +1734,9 @@ Phase 5 — Execute (work through ALL candidates):
       spyChangePct: SPY % change from get_fear_greed_vix indices (used to flag market-driven days)
     rvol_spike: include if confirmed >2x — null/unavailable is NOT a blocker, note in rationale
   save_tomorrow_watchlist → tickers scoring 0.35–0.45 that did not trade
+  log_daily_candidates → call ONCE at end of session with ALL evaluated candidates (traded + shadow-logged + skipped).
+    rank = your ordering by composite score (1 = highest). screenerRank = screener ordering by gap% (1 = largest gap).
+    action: "traded" | "shadow_logged" | "skipped" | "hard_excluded"
 
 ═══════════════════════════════════════════════════════════════
 NASDAQ CORRECTION/RALLY REFERENCE
