@@ -671,7 +671,7 @@ Derived from NASDAQ historical patterns in `output/knowledge-base/nasdaq-histori
 
 **`sector_leading`** — Sector ETF up pre-market. Stock in leading sector = momentum support.
 
-**`news_catalyst`** — Overnight/pre-market catalyst only (earnings, contract, regulatory, product). Pre-market window is the signal; intraday news is too late.
+**`news_catalyst`** — Fundamental/event-driven catalyst only: earnings beat/miss, guidance raise/lower, FDA approval/rejection, product launch, M&A, regulatory event, macro event. Analyst upgrades/PT raises do NOT qualify — use `analyst_conviction` instead. These two signals must be independent; never both true for the same catalyst event.
 
 **`notable_mention`** — Executive order, CEO shoutout, Congressional disclosure, major investor move. Checked via DuckDuckGo (5 queries per ticker).
 
@@ -679,7 +679,7 @@ Derived from NASDAQ historical patterns in `output/knowledge-base/nasdaq-histori
 
 **`contrarian_social`** — Overnight Reddit/StockTwits post count >15 with bearish sentiment on fundamentally strong setup. Reddit searched with `t=day` filter to capture overnight chatter.
 
-**`analyst_conviction`** — 2+ recent analyst upgrades or significant price target raise in the last 30 days.
+**`analyst_conviction`** — 2+ analyst upgrades or material PT raise (>20%). Analyst-driven gaps only. Cannot be true simultaneously with `news_catalyst` for the same catalyst event — e.g. a pure analyst upgrade day scores `analyst_conviction=true`, `news_catalyst=false`.
 
 ### Advisor (validation lens, not a signal)
 `search_advisor_briefings(ticker)` and `get_advisor_market_outlook` are available after independent research. Advisor's stance does NOT change setup_score — it informs position context.
@@ -832,7 +832,7 @@ Applies in both DRY_RUN and live mode.
 reconcilePositions(acct) — compares trades-open.json vs get_equity_positions
 on mismatch: send alert email + halt all trading
 ```
-Called at scan start and again before every trade execution.
+Called at scan start and again before every trade execution. `ORDER_PENDING` positions are excluded from the comparison — they haven't filled yet so Robinhood shows nothing; comparing them would generate false-positive mismatch alerts every cycle.
 
 ### Stop Loss: ATR-14 + Opening Range
 ```
@@ -1447,6 +1447,8 @@ Items are stacked: P1 = do now, P2 = after first 20 live trades, P3 = after firs
 | 28 | **Volatility-based position sizing** | Size inversely to ATR so each trade contributes equal risk. Replaces flat $125. Trigger: 20+ trades. |
 | 29 | **Realistic backtest cost modeling** | Bake slippage assumption into `recordClosedTrade` P&L so model trains on realistic net-of-cost outcomes. Trigger: 20+ live fills to calibrate slippage distribution. |
 | 30 | **Signal decay monitoring** | Track each signal's hit rate over rolling 30-trade windows. Detect crowding before it goes negative. Trigger: 100+ trades. |
+| 32 | **Gap-fade entry filter — ORB or post-fill slippage exit** | On analyst-upgrade days, stocks gap pre-market on thin volume then fade at open as institutions sell into retail. Two options: (1) ORB entry — don't place orders at 6am; enter at 6:45am only if price holds above opening range high. (2) Post-fill slippage exit — if fill price is >1.5% below decision price, exit immediately. ORB is architecturally cleaner but requires exit-daemon to become an entry engine. Trigger: confirm pattern across 10+ analyst-upgrade shadow log entries. |
+| 33 | **Daily candidate scorecard** | ✅ Implemented July 2026. `log_daily_candidates` tool writes `candidates-YYYY-MM-DD.json` at end of each session with rank, screenerRank, gapPct, compositeScore, signal breakdown, and action for all evaluated candidates. Enables signal correlation analysis at N=60. |
 | 31 | **Signal ensemble — second uncorrelated edge** | Add mean-reversion signal alongside momentum once momentum edge is validated. Stacking two unproven edges creates noise. Trigger: 100+ trades, first edge validated via holdout. |
 
 ### P3 — Tech Debt / Refactor (after first profitable month)
