@@ -1082,7 +1082,7 @@ const tools = [
         marketContext: { type: 'string', description: 'VIX, Fear & Greed, sector context at entry' },
         samAlignment:  { type: 'string', description: 'Sam\'s stance on this ticker (if checked)' },
         catalystType:  { type: 'string', enum: ['earnings_beat','earnings_miss','guidance_raise','analyst_upgrade','fda_news','ma','insider_purchase','macro','sector_sympathy','notable_mention','product_launch','regulatory','technical'], description: 'Primary catalyst driving the gap. Used for edge validation over time.' },
-        sector:        { type: 'string', description: 'GICS sector of the ticker (e.g. "Technology", "Consumer Discretionary"). Required for sector concentration guard — max 2 concurrent positions per sector.' },
+        sector:        { type: 'string', description: 'GICS sector of the ticker (e.g. "Technology", "Consumer Discretionary"). Used for correlation tagging only — no hard sector cap.' },
         regime: {
           type: 'object',
           description: 'Market regime snapshot at entry — populated from Phase 1 get_fear_greed_vix output. Used to slice edge by regime after 100+ trades.',
@@ -1641,8 +1641,8 @@ ${DRY_RUN ? '\n⚠️  DRY RUN MODE — orders logged but NOT submitted to Robin
 
 MULTI-POSITION MODE — up to ${MAX_POSITIONS} concurrent positions, ${positionSize} each.
 Research ALL screener candidates. Trade every one that qualifies (score ≥ 0.45) — do NOT stop after the first.
-Rank by setup_score descending. Apply sector diversity rule (max 2 per sector). place_trade returns
-blocked=true with reason when limits are reached — that is the gate, not you stopping early.
+Rank by setup_score descending. place_trade returns blocked=true when MAX_POSITIONS is reached — that is the gate, not you stopping early.
+Sector is tagged for analysis (sharedSector field) but is NOT a cap. Trade all qualifying candidates regardless of sector concentration.
 
 ${buildLearningsContext()}
 
@@ -1724,7 +1724,7 @@ Phase 4 — Sam validation (only after independent scoring):
 Phase 5 — Execute (work through ALL candidates):
   For each qualifying candidate (score ≥ 0.45, premarket_gap_up=true, earnings cleared):
     call place_trade — one call per ticker, highest score first.
-    place_trade will return blocked=true if MAX_POSITIONS or sector limit is reached — that ends trading.
+    place_trade will return blocked=true if MAX_POSITIONS is reached — that ends trading.
     Do NOT self-censor after the first trade. Let the gate in place_trade stop you.
   Required fields in every place_trade call:
     catalystType — earnings_beat | earnings_miss | guidance_raise | analyst_upgrade | fda_news |
