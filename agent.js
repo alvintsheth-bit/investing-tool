@@ -387,7 +387,7 @@ async function reconcilePositions(acct) {
     const brokerPos = (result?.data?.positions || []).filter(p => parseFloat(p.quantity) > 0);
     const brokerTickers = new Set(brokerPos.map(p => p.symbol));
     const localTickers  = new Set(local.map(p => p.ticker));
-    const inLocalOnly   = local.filter(p => !brokerTickers.has(p.ticker));
+    const inLocalOnly   = local.filter(p => p.state !== 'ORDER_PENDING' && !brokerTickers.has(p.ticker));
     const inBrokerOnly  = brokerPos.filter(p => !localTickers.has(p.symbol));
     if (inLocalOnly.length || inBrokerOnly.length) {
       const msg = [
