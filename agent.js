@@ -1676,13 +1676,17 @@ SIGNAL SCORING (setup_score — equal-weight until 60+ completed trades):
   premarket_gap_up    +++ gap >2% pre-market on elevated volume — PRIMARY signal
   rvol_spike          +++ relative volume >2x 30-day pre-market avg
   gap_likely_holds    ++  gap >5%: true = gap holds momentum intraday (not filled)
-  news_catalyst       ++  clear overnight/pre-market catalyst (not rumors)
+  news_catalyst       ++  fundamental/event-driven catalyst — earnings beat/miss, guidance raise,
+                          FDA approval, product launch, M&A, regulatory event, macro event.
+                          Analyst upgrades/PT raises do NOT qualify — use analyst_conviction instead.
+                          (These two signals must be independent — never both true for the same event.)
   sector_leading      +   sector ETF moving strongly pre-market
   macro_tailwind      +   VIX low/falling, broad market green pre-market
   notable_mention     +   executive order, CEO shoutout, Congressional trade
   insider_buying      +   recent Form 4 C-suite buy (context signal only)
   contrarian_social   +   high overnight bearish chatter on fundamentally strong setup
-  analyst_conviction  +   2+ recent upgrades or material PT raise
+  analyst_conviction  +   2+ analyst upgrades or material PT raise (>20%). Analyst-driven gaps only.
+                          Cannot be true simultaneously with news_catalyst for the same catalyst event.
 
 TRADE IF: setup_score ≥ 0.45 (TEMPORARY threshold to bootstrap trade history — will rise to 0.55+ once model trains on 60+ real trades)
 SIZE: fixed at ${positionSize} — no score-based size variation until 200+ live trades
