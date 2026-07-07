@@ -364,8 +364,14 @@ function computePositionDollars(_balance) {
 }
 
 function checkMaxConcurrent(openPositions) {
-  if (openPositions.length >= MAX_POSITIONS) {
-    return { blocked: true, reason: `Already at max ${MAX_POSITIONS} position(s): ${openPositions.map(p => p.ticker).join(', ')}` };
+  // In LIVE/ORB mode, queued trades count toward the cap — they will become positions at 6:45am
+  const queued = !DRY_RUN && existsSync(QUEUED_TRADES_FILE)
+    ? (() => { try { const d = JSON.parse(readFileSync(QUEUED_TRADES_FILE, 'utf-8')); return d.date === today ? (d.trades || []) : []; } catch { return []; } })()
+    : [];
+  const total = openPositions.length + queued.length;
+  if (total >= MAX_POSITIONS) {
+    const all = [...openPositions.map(p => p.ticker), ...queued.map(q => `${q.ticker}(queued)`)];
+    return { blocked: true, reason: `Already at max ${MAX_POSITIONS} position(s): ${all.join(', ')}` };
   }
   return { blocked: false };
 }
