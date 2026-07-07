@@ -1562,7 +1562,11 @@ Design decisions that were changed, and the reasoning behind each removal. Kept 
 
 **Why it was wrong:** Pre-market gaps on thin volume frequently fade at open. On analyst-upgrade days, stocks gap 2-4% pre-market then reverse as news is already priced in by institutions. Observed July 6 2026: all 4 candidates gapped pre-market then closed red. KLAC filled at -2.06% slippage vs decision price — slippage exceeded the stop distance before exit-daemon could act.
 
-**What replaced it:** ORB entry: agent queues candidates at 6am (no orders), exit-daemon logs prices at 6:35/6:40am, at 6:45am checks if price > 15-min ORB high. Gap held → buy. Gap faded → skip. All decisions logged to `orb-log-YYYY-MM-DD.json`.
+**What replaced it:** ORB entry: agent queues candidates at 6am (no orders), exit-daemon logs prices at 6:35/6:40am, at 6:45am checks if price > 15-min ORB high. Gap held → buy. Gap faded → skip. All decisions logged to `orb-log-YYYY-MM-DD.json`. At 12:45pm (force-close), every ORB log entry (entered or not) gets `recoveredByClose = price > orHigh`.
+
+**Catalyst tagging:** Every ORB log entry carries `catalystType` (agent's existing 13-value enum) and `catalystTag` (`stale-news` vs `structural`). Mapping: `analyst_upgrade | insider_purchase | sector_sympathy | technical` → `stale-news`; all others → `structural`. This is a hypothesis; `recoveredByClose` will measure at N=20 whether the classification predicts recovery.
+
+**STT case (July 7 2026):** Regulatory catalyst, gap faded, ORB skipped. Price recovered to target (+1.527R) by close. Tagging: `structural`, `recoveredByClose = true`. At N=20 we'll know if structural fades recover more often than stale-news fades.
 
 **Key learning:** Whenever execution timing changes, re-examine every gate that reads state files — the underlying assumptions about when state is written may no longer hold.
 

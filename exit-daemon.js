@@ -333,7 +333,14 @@ function saveOrbLog() { atomicWrite(ORB_LOG_FILE, orbLog); }
 async function logOrbPrices(queuedTrades, mark) {
   console.log(`[exit-daemon] ${6 + Math.floor((30 + mark) / 60)}:${String((30 + mark) % 60).padStart(2,'0')}am: logging ${mark}-min ORB prices for ${queuedTrades.length} queued candidate(s)...`);
   if (!orbLog.queued.length) {
-    orbLog.queued = queuedTrades.map(t => ({ ticker: t.ticker, decisionPrice: t.decisionPrice, stopPrice: t.stopPrice, targetPrice: t.targetPrice, setupScore: t.setupScore }));
+    orbLog.queued = queuedTrades.map(t => ({
+      ticker:       t.ticker,
+      decisionPrice: t.decisionPrice,
+      stopPrice:    t.stopPrice,
+      targetPrice:  t.targetPrice,
+      setupScore:   t.setupScore,
+      catalystType: t.catalystType || null,
+    }));
   }
   if (!orbLog.marks[mark]) orbLog.marks[mark] = {};
   for (const candidate of queuedTrades) {
@@ -343,6 +350,22 @@ async function logOrbPrices(queuedTrades, mark) {
     await sleep(300);
   }
   saveOrbLog();
+}
+
+// At 12:45pm: update every orb-log entry with whether price recovered above OR high by close.
+// This is the measurement that turns "stale-news vs structural" from an argument into data.
+async function logOrbRecovery() {
+  if (!orbLog.entries.length) return;
+  console.log('[exit-daemon] 12:45pm: logging recoveredByClose for all ORB candidates...');
+  for (const entry of orbLog.entries) {
+    const price = await getCurrentPrice(entry.ticker);
+    entry.closePrice       = price ?? null;
+    entry.recoveredByClose = price != null && entry.orHigh != null ? price > entry.orHigh : null;
+    console.log(`  [${entry.ticker}] close $${price?.toFixed(2) ?? 'n/a'} | OR high $${entry.orHigh?.toFixed(2) ?? 'n/a'} | recovered: ${entry.recoveredByClose}`);
+    await sleep(300);
+  }
+  saveOrbLog();
+  console.log('[exit-daemon] ORB recovery log complete.');
 }
 
 // Market buy (mirrors executeSell, DRY_RUN safe)
@@ -362,16 +385,27 @@ async function executeBuy(ticker, dollarAmount, fractionalQty) {
   });
 }
 
+// Map agent's 13-value catalystType enum to coarse tag for gap-fade analysis.
+// "stale-news" = news fully priced in overnight; "structural" = ongoing institutional catalyst.
+// This mapping is a hypothesis — recoveredByClose will tell us if it predicts recovery.
+const STALE_NEWS_CATALYSTS = new Set(['analyst_upgrade', 'insider_purchase', 'sector_sympathy', 'technical']);
+function gapFadeCatalystTag(catalystType) {
+  if (!catalystType) return 'unknown';
+  return STALE_NEWS_CATALYSTS.has(catalystType) ? 'stale-news' : 'structural';
+}
+
 // Submit ORB entry for a single queued candidate. Returns true if position was entered.
 async function submitOrbEntry(candidate, openPositions) {
   const { ticker, dollarAmount, fractionalQty, setupScore } = candidate;
+  const catalystType = candidate.catalystType || null;
+  const catalystTag  = gapFadeCatalystTag(catalystType);
 
   // Confirm current price above OR high (gap held)
   const or = await getOpeningRange(ticker);
   const price = await getCurrentPrice(ticker);
   const orHigh = or?.orHigh ?? null;
 
-  const entry = { ticker, decisionPrice: candidate.decisionPrice, orHigh, currentPrice: price, barsUsed: or?.barsUsed ?? 0, at: new Date().toISOString() };
+  const entry = { ticker, decisionPrice: candidate.decisionPrice, orHigh, currentPrice: price, barsUsed: or?.barsUsed ?? 0, catalystType, catalystTag, at: new Date().toISOString() };
 
   if (!orHigh || !price) {
     entry.decision = 'skip'; entry.reason = 'OR or price unavailable';
@@ -530,8 +564,9 @@ async function main() {
 
   let lastHaikuCheckMs = 0;
   let openingRangeComputed = false;
-  let orb5MinLogged  = false;
-  let orb10MinLogged = false;
+  let orb5MinLogged      = false;
+  let orb10MinLogged     = false;
+  let orbRecoveryLogged  = false;
   let consecutiveQuoteFailures = {};  // ticker → count
 
   while (true) {
@@ -630,6 +665,12 @@ async function main() {
       for (const { pos, price } of immediateExits) {
         await closePosition(pos, price, `or-stop-immediate ($${price.toFixed(2)} ≤ OR low $${pos.stopPrice})`);
       }
+    }
+
+    // ── ORB recovery log (at force-close time, before closing positions) ─────
+    if (!orbRecoveryLogged && ptNow >= forceCloseTime && orbLog.entries.length) {
+      orbRecoveryLogged = true;
+      await logOrbRecovery();
     }
 
     // ── Force-close time ──────────────────────────────────────────────────────
