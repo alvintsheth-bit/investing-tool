@@ -806,6 +806,8 @@ Sized from **settled buying power** (not total equity) to avoid good-faith-viola
 ### Max Concurrent Positions
 `checkMaxConcurrent(openPositions)` — blocks new entries if at/above MAX_POSITIONS (4). Each trade also records `sector`, `sharedSector` (true if another open position is in the same GICS sector), and `marketDrivenDay` (true if |SPY change| > 1.5%) for correlation analysis at N=60.
 
+**ORB mode fix (July 2026):** In LIVE/ORB mode, `place_trade` queues candidates to `queued-trades.json` rather than adding them to `trades-open.json` immediately. The original gate only checked `trades-open.json`, so with ORB active, `openPositions.length` is 0 at 6am and all screener candidates would have passed the MAX_POSITIONS check — the agent would queue all 10 candidates instead of 4. Fixed: `checkMaxConcurrent` now also reads `queued-trades.json` and counts those toward the cap, so `place_trade` correctly returns `blocked=true` after MAX_POSITIONS queued. The exit-daemon is the secondary gate at 6:45am (also enforces MAX_POSITIONS before each ORB entry), but the primary gate should be in the agent.
+
 ### Daily Loss Limit (1.5% of SOD balance)
 ```
 sodBalance      = balance saved at first scan of the day (sod-balance.json)
@@ -1567,6 +1569,28 @@ Design decisions that were changed, and the reasoning behind each removal. Kept 
 **Why it was wrong:** The first live trade (META, July 1 2026) filled at $607.76 at market open. exit-daemon logged "Waiting for PROTECTED state (current: ORDER_PENDING)" every 45 seconds for hours with no stop/target protection active. If META had dropped 10% intraday, the daemon would have force-closed at 12:45pm with no stop ever triggered.
 
 **What was fixed:** exit-daemon now checks `ORDER_PENDING` positions in each poll cycle after `PT.MARKET_OPEN` (6:30am PT). `confirmFill()` calls `get_equity_positions` (not `get_portfolio` which returns account summary, not positions), finds the broker position by symbol, reads `average_buy_price`, re-anchors stop/target using `atr14/decisionPrice` as stop distance, and transitions the position from `ORDER_PENDING → FILLED → PROTECTED` in one step. A 20-second `AbortController` timeout was added to all Robinhood MCP `fetch` calls to prevent silent hangs. The fix also corrects the MCP tool: `get_portfolio` returns `{data: {equity_value, cash, ...}}` — individual positions require `get_equity_positions` which returns `{data: {positions: [{symbol, average_buy_price, quantity}]}}`.
+
+---
+
+### Immediate market-open entry → ORB entry at 6:45am (changed July 2026)
+
+**What it was:** `place_trade()` submitted a market order at ~6:01am PT (pre-market). Market orders placed pre-open queue and execute at 6:30am open. The agent completed all research and placed all orders before the market opened.
+
+**Why it was wrong:** Pre-market gaps on thin volume frequently fade at the open as institutions sell into retail buying. On analyst-upgrade days especially, stocks gap 2-4% pre-market on light order flow, then reverse -2% to -4% in the first 15 minutes of trading as the news cycle has been fully digested by institutions overnight. Observed July 6 2026: KLAC, LRCX, SNDK, AMAT all gapped pre-market then closed red. KLAC filled at $245.37 vs $250.52 decision price (-2.06%) — slippage exceeded the stop distance before exit-daemon could act.
+
+**The mechanism:** If a gap is genuine (institutions adding, not just retail momentum), price holds above the first 15 minutes' high (opening range high) at 6:45am PT. If the gap is being faded (institutions selling into retail), price is already at or below the opening range high. This is a reliable institutional-grade filter used by professional traders.
+
+**What replaced it:** ORB (Opening Range Breakout) entry architecture:
+1. Agent queues qualifying candidates to `queued-trades.json` at 6am — no orders submitted
+2. Exit-daemon logs 5-min price (6:35am) and 10-min price (6:40am) for each queued candidate — empirical data for future window tuning
+3. At 6:45am: for each candidate, fetch the 15-min ORB high (max of 3 × 5-min bars from 6:30–6:45am). If current price > ORB high → gap held → submit market buy immediately. If current price ≤ ORB high → gap faded → skip, log reason.
+4. All decisions written to `orb-log-YYYY-MM-DD.json`
+
+**What we lose:** Entries on fast-moving gap-and-go names that run from 6:30am–6:45am before ORB confirmation. This is an acceptable trade-off — we're targeting confirmed gap holds, not first-candle momentum plays.
+
+**Implementation bug caught (July 2026):** `checkMaxConcurrent()` only read `trades-open.json`. With ORB, no positions are in `trades-open.json` at 6am (they appear at 6:45am after ORB entry). The gate was effectively 0 — the agent would have queued all 10 screener candidates. Fixed to also count `queued-trades.json` entries toward the MAX_POSITIONS cap.
+
+**Key learning:** Bugs in gating logic are easy to miss when the code path that validates the gate (checking open positions) is correct — but the underlying assumption (positions exist at gate-check time) changed with the new architecture. Whenever execution timing changes, re-examine every gate that reads state files.
 
 ---
 

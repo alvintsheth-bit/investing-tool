@@ -806,6 +806,8 @@ Sized from **settled buying power** (not total equity) to avoid good-faith-viola
 ### Max Concurrent Positions
 `checkMaxConcurrent(openPositions)` — blocks new entries if at/above MAX_POSITIONS (4). Each trade also records `sector`, `sharedSector` (true if another open position is in the same GICS sector), and `marketDrivenDay` (true if |SPY change| > 1.5%) for correlation analysis at N=60.
 
+**ORB mode fix (July 2026):** `checkMaxConcurrent` now also reads `queued-trades.json` and counts those toward the cap. Without this, in LIVE/ORB mode the gate was effectively 0 (no positions in trades-open.json at 6am) and the agent would have queued all screener candidates instead of capping at 4.
+
 ### Daily Loss Limit (1.5% of SOD balance)
 ```
 sodBalance      = balance saved at first scan of the day (sod-balance.json)
@@ -1551,6 +1553,18 @@ Design decisions that were changed, and the reasoning behind each removal. Kept 
 **First live trade (META, July 1 2026):** Filled at $607.76 at market open. exit-daemon provided no stop/target protection for the entire day.
 
 **What was fixed:** exit-daemon `confirmFill()` now polls `get_equity_positions` (not `get_portfolio` which returns account summary, not holdings) after `PT.MARKET_OPEN` each poll cycle. Reads `average_buy_price`, re-anchors stop/target, transitions `ORDER_PENDING → PROTECTED`. Also added 20-second `AbortController` timeout on all Robinhood MCP `fetch` calls to prevent silent network hangs.
+
+---
+
+### Immediate market-open entry → ORB entry at 6:45am (changed July 2026)
+
+**What it was:** `place_trade()` submitted a market order at ~6:01am PT (pre-market), queuing for execution at market open (6:30am PT).
+
+**Why it was wrong:** Pre-market gaps on thin volume frequently fade at open. On analyst-upgrade days, stocks gap 2-4% pre-market then reverse as news is already priced in by institutions. Observed July 6 2026: all 4 candidates gapped pre-market then closed red. KLAC filled at -2.06% slippage vs decision price — slippage exceeded the stop distance before exit-daemon could act.
+
+**What replaced it:** ORB entry: agent queues candidates at 6am (no orders), exit-daemon logs prices at 6:35/6:40am, at 6:45am checks if price > 15-min ORB high. Gap held → buy. Gap faded → skip. All decisions logged to `orb-log-YYYY-MM-DD.json`.
+
+**Key learning:** Whenever execution timing changes, re-examine every gate that reads state files — the underlying assumptions about when state is written may no longer hold.
 
 ---
 
