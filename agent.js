@@ -78,10 +78,12 @@ const TRADES_LOG_FILE      = join(OUTPUT_DIR, 'trades-log.json');
 const SIGNAL_WEIGHTS_FILE  = join(OUTPUT_DIR, 'signal-weights.json');
 const WATCHLIST_FILE       = join(OUTPUT_DIR, 'watchlist-tomorrow.json');
 const CIRCUIT_BREAKER_FILE = join(OUTPUT_DIR, 'circuit-breaker.json');
+const QUEUED_TRADES_FILE   = join(OUTPUT_DIR, 'queued-trades.json');
 
 // ─── Trade State Machine (item 35) ───────────────────────────────────────────
 const TRADE_STATES = {
   CANDIDATE:       'CANDIDATE',       // score passed, pre-checks not yet run
+  QUEUED:          'QUEUED',          // queued for ORB entry at 6:45am (live only)
   ORDER_SUBMITTED: 'ORDER_SUBMITTED', // order sent to broker
   ORDER_PENDING:   'ORDER_PENDING',   // waiting for fill confirmation
   PARTIALLY_FILLED:'PARTIALLY_FILLED',// partial fill observed
@@ -1341,7 +1343,21 @@ async function executeTool(name, input) {
         isLive: !DRY_RUN,
       });
 
-      // ── Item 35: ORDER_SUBMITTED ──────────────────────────────────────────────
+      // ── LIVE: queue for ORB entry at 6:45am — no immediate order submission ──
+      if (!DRY_RUN) {
+        transitionState(posRecord, TRADE_STATES.QUEUED, { orbEntryTime: '6:45am PT', decisionPrice });
+        const qd = existsSync(QUEUED_TRADES_FILE)
+          ? JSON.parse(readFileSync(QUEUED_TRADES_FILE, 'utf-8'))
+          : { date: today, trades: [] };
+        if (qd.date !== today) { qd.date = today; qd.trades = []; }
+        qd.trades.push(posRecord);
+        atomicWrite(QUEUED_TRADES_FILE, qd);
+        console.log(`  📋 [ORB] ${ticker} queued for 6:45am entry (pre-mkt: $${decisionPrice})`);
+        CIRCUIT.tradesExecuted.push({ ticker, side, dollarAmount, entryPrice: decisionPrice, setupScore });
+        return { queued: true, ticker, decisionPrice, stopPrice: posRecord.stopPrice, targetPrice: posRecord.targetPrice, message: 'Queued for ORB entry at 6:45am PT — enters only if price holds above opening range high' };
+      }
+
+      // ── DRY_RUN: simulate order + immediate fill ───────────────────────────────
       transitionState(posRecord, TRADE_STATES.ORDER_SUBMITTED, { decisionPrice, dollarAmount });
 
       const orderResult = await executeMarketOrder(ticker, side, dollarAmount, decisionPrice, rationale.slice(0, 80));
@@ -1652,15 +1668,14 @@ ${screenerBlock}
 DAY TRADING RULES
 ═══════════════════════════════════════════════════════════════
 
-ENTRY WINDOW: 6:00am–10:00am PT only. No new buys after 10am PT.
+ENTRY WINDOW: Research 6:00am–6:30am PT. place_trade queues candidates for ORB entry at 6:45am.
+  Exit-daemon submits buy orders at 6:45am only if price > opening range high (15-min ORB).
+  Gap fades → no entry. Gap holds → buys at market. No new research after 10am PT.
 POSITION SIZE: ${positionSize} per trade (fixed — ${modelStatusNote})
 MAX CONCURRENT: ${MAX_POSITIONS} position(s) (currently open: ${openPositions.length})
 FORCE-CLOSE: 12:45pm PT — exit-daemon closes on stop/target; force-close fires as failsafe
-STOP LOSS: ATR-14 based pre-market; exit-daemon updates to opening-range stop after 6:35am
+STOP LOSS: ATR-14 based pre-market; exit-daemon updates to opening-range low after 6:45am
 TARGET: 1.5× stop distance from CONFIRMED FILL PRICE (not pre-market quote)
-
-ORDER QUEUING NOTE: Orders placed before 6:30am are pre-market queues — they execute at
-market open. Slippage of 0.5-1% is normal; >2% is logged as a warning.
 
 HARD EXCLUDES (never trade):
   ✗ Earnings today before close
@@ -1728,7 +1743,9 @@ Phase 4 — Sam validation (only after independent scoring):
 Phase 5 — Execute (work through ALL candidates):
   For each qualifying candidate (score ≥ 0.45, premarket_gap_up=true, earnings cleared):
     call place_trade — one call per ticker, highest score first.
-    place_trade will return blocked=true if MAX_POSITIONS is reached — that ends trading.
+    LIVE mode: place_trade queues the candidate. Exit-daemon submits the buy at 6:45am if price > OR high.
+    DRY_RUN mode: place_trade simulates an immediate fill at decision price (unchanged).
+    place_trade returns blocked=true if MAX_POSITIONS is reached — that ends trading.
     Do NOT self-censor after the first trade. Let the gate in place_trade stop you.
   Required fields in every place_trade call:
     catalystType — earnings_beat | earnings_miss | guidance_raise | analyst_upgrade | fda_news |

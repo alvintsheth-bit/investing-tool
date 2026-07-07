@@ -67,13 +67,13 @@ DAILY  5:30 AM — scraper.js
                  • Saves output/advisor-YYYY-MM-DD.json
                  • Logs to output/logs/scrape.log
 
-DAILY  5:55 AM — screener.js (pure code, no Claude — deterministic pre-filter)
-                 • Builds universe: 83 curated large/liquid tickers + after-market-close earnings (yesterday) + yesterday watchlist
+DAILY  5:40 AM — screener.js (pure code, no Claude — deterministic pre-filter)
+                 • Builds universe: 580 tickers (S&P 500 from Wikipedia + NASDAQ 100 + curated high-beta seeds)
                  • Fetches Yahoo Finance 5-min intraday bars (includePrePost=true) for every ticker
                  • Computes real gap% (pre-market price vs prior close) from 5-min bar closes
                  • RVOL = null (Yahoo returns volume=0 for all pre-market bars — not computable here)
                  • Sorts by gap magnitude (|gap%|), saves top 10 to output/screener-YYYY-MM-DD.json
-                 • Runs in ~30s, finishes before agent starts
+                 • Runs in ~2 min (580 tickers vs prior 83), finishes before agent starts
                  • Logs to output/logs/screener.log
 
 DAILY  6:00 AM — agent.js scan (30 min before open, Claude Sonnet, 20 iterations)
@@ -84,16 +84,23 @@ DAILY  6:00 AM — agent.js scan (30 min before open, Claude Sonnet, 20 iteratio
                  • Phase 3: Research screener candidates in ranked order — news catalyst,
                  •           Reddit chatter, notable mentions, insider activity, ATR stop/target
                  • Phase 4: Advisor validation per ticker (briefing search + outlook on demand)
-                 • Phase 5: Execute if setup_score ≥ 0.45, log to trades-open.json
+                 • Phase 5: Execute if setup_score ≥ 0.45 — in LIVE mode, place_trade queues
+                 •           candidates to queued-trades.json (no immediate order submission)
                  •           Shadow-log candidates scoring 0.35–0.45 via log_rejected_candidate
-                 • Entry window: 6:00–10:00am PT only. LONG ONLY — no short positions.
+                 • Research window: 6:00–6:30am PT. ORB entry at 6:45am via exit-daemon.
                  • Scan report header shows screener input (e.g. "NVDA +3.2%, GE +2.1%")
                  • Logs to output/logs/analyze.log
 
 DAILY  6:25 AM — exit-daemon.js (long-running daemon, runs until 1pm PT)
                  • Polls open positions every 45 seconds — pure code fast loop
                  • Stop/target hit → market sell immediately
-                 • Updates opening-range stop after 6:45am PT (all 3 five-min bars complete)
+                 • 6:35am: logs 5-min price mark for all queued ORB candidates
+                 • 6:40am: logs 10-min price mark for all queued ORB candidates
+                 • 6:45am: ORB entry decision — for each queued candidate, fetches 15-min OR high.
+                 •   If current price > OR high → gap held → market buy submitted immediately.
+                 •   If current price ≤ OR high → gap faded → candidate skipped (no entry).
+                 •   All decisions logged to orb-log-YYYY-MM-DD.json for empirical window tuning.
+                 • 6:45am also: tightens stop to OR low for existing PROTECTED positions
                  • Haiku thesis-break check every 90 min (VIX spike, halt news)
                  • Tracks MFE/MAE per position on every poll
                  • Quote unavailable 5× in a row → force-close for safety
@@ -279,7 +286,7 @@ Scraped the entire site on first run. Handles complex interactive pages:
 
 **Edge hypothesis:** Liquid stocks that gap ≥2% pre-market on a clear overnight catalyst (news, earnings surprise, notable mention) and whose gap is confirmed by RVOL >2× (checked pre-open via `get_premarket_data` in Phase 3, before market open) tend to trend directionally through the first 90 minutes of the session — the edge is in identifying which catalyst types produce sustained intraday moves vs. gaps that fade within the opening 30 minutes.
 
-Note on RVOL timing: RVOL is `null` at screener time (5:55am) because Yahoo Finance returns zero volume for pre-market bars. It becomes available when the agent calls `get_premarket_data` during Phase 3 (~6:00am), sourced from FMP `preMarketVolume` vs `averageVolume`. Entry decisions are made with RVOL confirmed — not before it's available.
+Note on RVOL timing: RVOL is `null` at screener time (5:40am) because Yahoo Finance returns zero volume for pre-market bars. It becomes available when the agent calls `get_premarket_data` during Phase 3 (~6:00am), sourced from FMP `preMarketVolume` vs `averageVolume`. Entry decisions are made with RVOL confirmed — not before it's available.
 
 ### How the Agentic Loop Works
 
@@ -357,7 +364,7 @@ isMarketDay()?
 
 ---
 
-### STEP 0.5 — Pre-Market Screener (5:55am, pure code — runs before agent)
+### STEP 0.5 — Pre-Market Screener (5:40am, pure code — runs before agent)
 
 ```
 screener.js (launchd job):
@@ -1447,7 +1454,7 @@ Items are stacked: P1 = do now, P2 = after first 20 live trades, P3 = after firs
 | 28 | **Volatility-based position sizing** | Size inversely to ATR so each trade contributes equal risk. Replaces flat $125. Trigger: 20+ trades. |
 | 29 | **Realistic backtest cost modeling** | Bake slippage assumption into `recordClosedTrade` P&L so model trains on realistic net-of-cost outcomes. Trigger: 20+ live fills to calibrate slippage distribution. |
 | 30 | **Signal decay monitoring** | Track each signal's hit rate over rolling 30-trade windows. Detect crowding before it goes negative. Trigger: 100+ trades. |
-| 32 | **Gap-fade entry filter — ORB or post-fill slippage exit** | On analyst-upgrade days, stocks gap pre-market on thin volume then fade at open as institutions sell into retail. Two options: (1) ORB entry — don't place orders at 6am; enter at 6:45am only if price holds above opening range high. (2) Post-fill slippage exit — if fill price is >1.5% below decision price, exit immediately. ORB is architecturally cleaner but requires exit-daemon to become an entry engine. Trigger: confirm pattern across 10+ analyst-upgrade shadow log entries. |
+| 32 | **Gap-fade entry filter — ORB entry at 6:45am** | ✅ Implemented July 2026. Agent queues qualifying candidates to `queued-trades.json` instead of placing orders immediately. Exit-daemon logs 5-min and 10-min price marks at 6:35am and 6:40am, then at 6:45am fetches the 15-min ORB high: if price > ORB high → gap held → market buy; if price ≤ ORB high → gap faded → skip. All decisions logged to `orb-log-YYYY-MM-DD.json` for tuning. DRY_RUN behavior unchanged. |
 | 33 | **Daily candidate scorecard** | ✅ Implemented July 2026. `log_daily_candidates` tool writes `candidates-YYYY-MM-DD.json` at end of each session with rank, screenerRank, gapPct, compositeScore, signal breakdown, and action for all evaluated candidates. Enables signal correlation analysis at N=60. |
 | 31 | **Signal ensemble — second uncorrelated edge** | Add mean-reversion signal alongside momentum once momentum edge is validated. Stacking two unproven edges creates noise. Trigger: 100+ trades, first edge validated via holdout. |
 
@@ -1485,7 +1492,7 @@ Design decisions that were changed, and the reasoning behind each removal. Kept 
 2. The agent had no fixed universe — it researched whatever the LLM decided looked interesting from search snippets. Different tickers every day, no consistency.
 3. The real discovery question ("what is moving right now?") is a data question, not a search question. Yahoo 5-min intraday bars answer it deterministically.
 
-**What replaced it:** `screener.js` — runs at 5:55am, screens a fixed 83-ticker universe plus overnight earnings plus yesterday's watchlist using real 5-min bar data. Outputs a ranked JSON file the agent reads directly.
+**What replaced it:** `screener.js` — runs at 5:40am, screens a 580-ticker universe (S&P 500 + NASDAQ 100 + curated seeds) plus overnight earnings plus yesterday's watchlist using real 5-min bar data. Outputs a ranked JSON file the agent reads directly.
 
 ---
 
@@ -1533,7 +1540,7 @@ Design decisions that were changed, and the reasoning behind each removal. Kept 
 
 **What it was:** `place_trade()` called FMP `quote` endpoint for the current price. FMP returns previous day's close at 6am PT on large overnight gaps (MU: returned $1,048 vs actual pre-market $1,242).
 
-**What replaced it:** Screener's `preMarketPrice` (true Yahoo 5-min bar from 5:55am) is now the primary decision price. FMP `quote` is fallback only when ticker isn't in screener output.
+**What replaced it:** Screener's `preMarketPrice` (true Yahoo 5-min bar from 5:40am) is now the primary decision price. FMP `quote` is fallback only when ticker isn't in screener output.
 
 ---
 

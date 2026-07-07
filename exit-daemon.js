@@ -52,7 +52,9 @@ function ptMinutes() {
 
 const PT = {
   MARKET_OPEN:        6 * 60 + 30,  // 6:30am
-  OR_CHECK:           6 * 60 + 45,  // 6:45am — all 3 first 5-min bars complete at 6:45am
+  OR_5MIN:            6 * 60 + 35,  // 6:35am — first 5-min bar closes
+  OR_10MIN:           6 * 60 + 40,  // 6:40am — second 5-min bar closes
+  OR_CHECK:           6 * 60 + 45,  // 6:45am — all 3 first 5-min bars complete; ORB entry decision
   ENTRY_CUTOFF:      10 * 60,        // 10:00am
   EARLY_FORCE_CLOSE:  9 * 60 + 45,  // 9:45am (early-close days)
   FORCE_CLOSE:       12 * 60 + 45,  // 12:45pm
@@ -61,6 +63,7 @@ const PT = {
 
 // ─── Trade State Machine (mirrors agent.js — no shared lib to keep daemon standalone) ──
 const TRADE_STATES = {
+  QUEUED:        'QUEUED',
   ORDER_PENDING: 'ORDER_PENDING',
   FILLED:        'FILLED',
   PROTECTED:     'PROTECTED',
@@ -78,8 +81,10 @@ const forceCloseTime = EARLY_CLOSE_DATES.has(today) ? PT.EARLY_FORCE_CLOSE : PT.
 const marketCloseTime = EARLY_CLOSE_DATES.has(today) ? 10 * 60 : PT.MARKET_CLOSE;
 
 // ─── Shared File State ────────────────────────────────────────────────────────
-const OPEN_POSITIONS_FILE = join(OUTPUT_DIR, 'trades-open.json');
-const TRADES_LOG_FILE     = join(OUTPUT_DIR, 'trades-log.json');
+const OPEN_POSITIONS_FILE  = join(OUTPUT_DIR, 'trades-open.json');
+const TRADES_LOG_FILE      = join(OUTPUT_DIR, 'trades-log.json');
+const QUEUED_TRADES_FILE   = join(OUTPUT_DIR, 'queued-trades.json');
+const ORB_LOG_FILE         = join(OUTPUT_DIR, `orb-log-${today}.json`);
 
 function atomicWrite(path, data) {
   const tmp = path + '.tmp';
@@ -310,6 +315,135 @@ async function executeSell(ticker, currentPrice, dollarAmount, fractionalQty, re
   });
 }
 
+// ─── Queued Trades (ORB entry) ────────────────────────────────────────────────
+function loadQueuedTrades() {
+  if (!existsSync(QUEUED_TRADES_FILE)) return [];
+  try {
+    const data = JSON.parse(readFileSync(QUEUED_TRADES_FILE, 'utf-8'));
+    if (data.date !== today) return [];
+    return data.trades || [];
+  } catch { return []; }
+}
+
+// Write full ORB log atomically (price marks + entry decisions)
+let orbLog = { date: today, queued: [], marks: {}, entries: [] };
+function saveOrbLog() { atomicWrite(ORB_LOG_FILE, orbLog); }
+
+// Log price for all queued candidates at a given minute mark (5, 10, 15)
+async function logOrbPrices(queuedTrades, mark) {
+  console.log(`[exit-daemon] ${6 + Math.floor((30 + mark) / 60)}:${String((30 + mark) % 60).padStart(2,'0')}am: logging ${mark}-min ORB prices for ${queuedTrades.length} queued candidate(s)...`);
+  if (!orbLog.queued.length) {
+    orbLog.queued = queuedTrades.map(t => ({ ticker: t.ticker, decisionPrice: t.decisionPrice, stopPrice: t.stopPrice, targetPrice: t.targetPrice, setupScore: t.setupScore }));
+  }
+  if (!orbLog.marks[mark]) orbLog.marks[mark] = {};
+  for (const candidate of queuedTrades) {
+    const price = await getCurrentPrice(candidate.ticker);
+    orbLog.marks[mark][candidate.ticker] = { price, gapFromDecision: price ? +((price - candidate.decisionPrice) / candidate.decisionPrice * 100).toFixed(2) : null };
+    console.log(`  [${candidate.ticker}] ${mark}-min price: $${price?.toFixed(2) ?? 'unavailable'} (decision: $${candidate.decisionPrice})`);
+    await sleep(300);
+  }
+  saveOrbLog();
+}
+
+// Market buy (mirrors executeSell, DRY_RUN safe)
+async function executeBuy(ticker, dollarAmount, fractionalQty) {
+  if (DRY_RUN) {
+    const dryPath = join(OUTPUT_DIR, 'trades', `${today}-${ticker}-buy-orb-DRY.json`);
+    writeFileSync(dryPath, JSON.stringify({ ticker, side: 'buy', dollarAmount, fractionalQty, timestamp: new Date().toISOString(), note: 'ORB DRY_RUN' }, null, 2));
+    console.log(`  🔷 [DRY ORB] BUY ${ticker} @ market`);
+    return { dryRun: true };
+  }
+  const acct = await getRHAccountNumber();
+  if (!acct) return { error: 'No account number' };
+  console.log(`  📥 [ORB] BUY ${ticker} — placing market order`);
+  return rhMCP('place_equity_order', {
+    account_number: acct, symbol: ticker, side: 'buy', type: 'market',
+    quantity: String(fractionalQty), time_in_force: 'gfd',
+  });
+}
+
+// Submit ORB entry for a single queued candidate. Returns true if position was entered.
+async function submitOrbEntry(candidate, openPositions) {
+  const { ticker, dollarAmount, fractionalQty, setupScore } = candidate;
+
+  // Confirm current price above OR high (gap held)
+  const or = await getOpeningRange(ticker);
+  const price = await getCurrentPrice(ticker);
+  const orHigh = or?.orHigh ?? null;
+
+  const entry = { ticker, decisionPrice: candidate.decisionPrice, orHigh, currentPrice: price, barsUsed: or?.barsUsed ?? 0, at: new Date().toISOString() };
+
+  if (!orHigh || !price) {
+    entry.decision = 'skip'; entry.reason = 'OR or price unavailable';
+    console.log(`  [${ticker}] ORB skip — no price/OR data`);
+    orbLog.entries.push(entry); saveOrbLog();
+    return false;
+  }
+
+  if (price <= orHigh) {
+    entry.decision = 'fade'; entry.reason = `price $${price.toFixed(2)} ≤ OR high $${orHigh.toFixed(2)} — gap faded`;
+    console.log(`  [${ticker}] ORB FADE — price $${price.toFixed(2)} ≤ OR high $${orHigh.toFixed(2)} — sitting out`);
+    orbLog.entries.push(entry); saveOrbLog();
+    return false;
+  }
+
+  entry.decision = 'enter'; entry.reason = `price $${price.toFixed(2)} > OR high $${orHigh.toFixed(2)} — gap held`;
+  console.log(`  [${ticker}] ORB ENTRY — price $${price.toFixed(2)} > OR high $${orHigh.toFixed(2)} — buying`);
+
+  const orderResult = await executeBuy(ticker, dollarAmount, fractionalQty);
+  if (orderResult?.error) {
+    entry.decision = 'error'; entry.reason = orderResult.error;
+    orbLog.entries.push(entry); saveOrbLog();
+    return false;
+  }
+
+  // Confirm fill (market is open, should fill within seconds)
+  await sleep(3000);
+  let fillPrice = price; // fallback
+  let slippage  = 0;
+  if (!DRY_RUN) {
+    const acct = await getRHAccountNumber();
+    const ordersResult = await rhMCP('get_equity_orders', { account_number: acct, symbol: ticker, placed_agent: 'agentic', state: 'filled' });
+    const buyOrder = (ordersResult?.data?.orders || []).find(o => o.side === 'buy');
+    if (buyOrder?.average_price) {
+      fillPrice = parseFloat(buyOrder.average_price);
+      slippage  = +((fillPrice - candidate.decisionPrice) / candidate.decisionPrice * 100).toFixed(2);
+    }
+  } else {
+    fillPrice = price; // DRY: use current price as fill
+  }
+
+  // Anchor stop/target to confirmed fill price
+  const atrPct      = candidate.atr14 ? parseFloat(candidate.atr14) / candidate.decisionPrice : 0.025;
+  const stopPrice   = parseFloat((fillPrice * (1 - atrPct)).toFixed(2));
+  const targetPrice = parseFloat((fillPrice * (1 + atrPct * 1.5)).toFixed(2));
+
+  // Build position record and write to trades-open.json
+  const posRecord = {
+    ...candidate,
+    state:       TRADE_STATES.PROTECTED,
+    entryPrice:  fillPrice,
+    slippagePct: slippage,
+    stopPrice, targetPrice,
+    currentPnl: 0, maxFavorableExcursion: 0, maxAdverseExcursion: 0,
+    stateHistory: [
+      ...(candidate.stateHistory || []),
+      { state: 'FILLED',     at: new Date().toISOString(), fillPrice, slippage, note: 'ORB fill' },
+      { state: 'PROTECTED',  at: new Date().toISOString(), stopPrice, targetPrice, anchoredToFill: true },
+    ],
+  };
+
+  const openData  = loadOpenPositions();
+  openData.positions.push(posRecord);
+  atomicWrite(OPEN_POSITIONS_FILE, openData);
+
+  entry.fillPrice = fillPrice; entry.slippage = slippage; entry.stopPrice = stopPrice; entry.targetPrice = targetPrice;
+  orbLog.entries.push(entry); saveOrbLog();
+
+  console.log(`  ✅ [${ticker}] ORB fill @ $${fillPrice} (slippage ${slippage > 0 ? '+' : ''}${slippage}%) | stop $${stopPrice} | target $${targetPrice}`);
+  return true;
+}
+
 // ─── News + VIX for Haiku thesis-break check ─────────────────────────────────
 async function getNewsHeadlines(ticker) {
   try {
@@ -396,6 +530,8 @@ async function main() {
 
   let lastHaikuCheckMs = 0;
   let openingRangeComputed = false;
+  let orb5MinLogged  = false;
+  let orb10MinLogged = false;
   let consecutiveQuoteFailures = {};  // ticker → count
 
   while (true) {
@@ -416,18 +552,51 @@ async function main() {
       break;
     }
 
-    const openData = loadOpenPositions();
-    if (!openData.positions.length) {
+    const openData    = loadOpenPositions();
+    const queuedTrades = loadQueuedTrades();
+    if (!openData.positions.length && !queuedTrades.length) {
       if (ptNow >= PT.MARKET_CLOSE - 5) break; // no positions + near close → done
       await sleep(60_000);
       continue;
     }
 
-    // ── Item 37: Opening range update — runs once at 6:45am PT ──────────────
+    // ── 6:35am: log first 5-min price mark for queued candidates ────────────
+    if (!orb5MinLogged && ptNow >= PT.OR_5MIN && queuedTrades.length) {
+      orb5MinLogged = true;
+      await logOrbPrices(queuedTrades, 5);
+    }
+
+    // ── 6:40am: log second 5-min price mark for queued candidates ───────────
+    if (!orb10MinLogged && ptNow >= PT.OR_10MIN && queuedTrades.length) {
+      orb10MinLogged = true;
+      await logOrbPrices(queuedTrades, 10);
+    }
+
+    // ── 6:45am: ORB entry decisions + opening range stop update ─────────────
     // All 3 first five-minute bars are complete at 6:45am (6:30, 6:35, 6:40 bars close by 6:45)
     if (!openingRangeComputed && ptNow >= PT.OR_CHECK) {
-      console.log('[exit-daemon] 6:45am: computing opening ranges (3 completed 5-min bars)...');
-      const positionsToSave = [...openData.positions];
+      console.log('[exit-daemon] 6:45am: ORB entry decisions + opening range stop updates...');
+
+      // ── ORB entry: process queued candidates ────────────────────────────
+      if (queuedTrades.length) {
+        console.log(`[exit-daemon] Processing ${queuedTrades.length} queued candidate(s) for ORB entry...`);
+        // Sort by setupScore descending (highest conviction first)
+        const sorted = [...queuedTrades].sort((a, b) => (b.setupScore || 0) - (a.setupScore || 0));
+        for (const candidate of sorted) {
+          const currentOpen = loadOpenPositions();
+          const maxPos = parseInt(process.env.MAX_POSITIONS || '4');
+          if (currentOpen.positions.length >= maxPos) {
+            console.log(`  [${candidate.ticker}] MAX_POSITIONS (${maxPos}) reached — skipping remaining ORB candidates`);
+            break;
+          }
+          await submitOrbEntry(candidate, currentOpen.positions);
+          await sleep(500);
+        }
+      }
+
+      // ── OR stop update: tighten stop for existing PROTECTED positions ────
+      const freshOpen = loadOpenPositions();
+      const positionsToSave = [...freshOpen.positions];
       const immediateExits = [];
 
       for (const pos of positionsToSave) {
@@ -479,6 +648,10 @@ async function main() {
     const updatedPositions = [...openData.positions];
     for (const pos of updatedPositions) {
       // Item 35: stop/target only valid once PROTECTED. If no state field (legacy records), treat as PROTECTED.
+      if (pos.state === TRADE_STATES.QUEUED) {
+        console.log(`  [${pos.ticker}] QUEUED — awaiting ORB decision at 6:45am`);
+        continue;
+      }
       if (pos.state === TRADE_STATES.ORDER_PENDING) {
         if (ptNow >= PT.MARKET_OPEN) {
           await confirmFill(pos, openData);
