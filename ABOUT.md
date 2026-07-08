@@ -806,7 +806,9 @@ Sized from **settled buying power** (not total equity) to avoid good-faith-viola
 ### Max Concurrent Positions
 `checkMaxConcurrent(openPositions)` — blocks new entries if at/above MAX_POSITIONS (4). Each trade also records `sector`, `sharedSector` (true if another open position is in the same GICS sector), and `marketDrivenDay` (true if |SPY change| > 1.5%) for correlation analysis at N=60.
 
-**ORB mode fix (July 2026):** In LIVE/ORB mode, `place_trade` queues candidates to `queued-trades.json` rather than adding them to `trades-open.json` immediately. The original gate only checked `trades-open.json`, so with ORB active, `openPositions.length` is 0 at 6am and all screener candidates would have passed the MAX_POSITIONS check — the agent would queue all 10 candidates instead of 4. Fixed: `checkMaxConcurrent` now also reads `queued-trades.json` and counts those toward the cap, so `place_trade` correctly returns `blocked=true` after MAX_POSITIONS queued. The exit-daemon is the secondary gate at 6:45am (also enforces MAX_POSITIONS before each ORB entry), but the primary gate should be in the agent.
+**ORB mode fix v1 (July 2026 — superseded):** Initially fixed `checkMaxConcurrent` to also count `queued-trades.json` entries toward MAX_POSITIONS so the agent wouldn't queue all 10 screener candidates. This created a new bug: on days where all queued trades fail ORB (gap fades), the agent blocks backup candidates and the system exits with 0 trades instead of trying the next-best scorer.
+
+**ORB mode fix v2 (July 8 2026):** `checkMaxConcurrent` now only counts confirmed open positions (`trades-open.json`). The agent queues every candidate that passes the score threshold (≥0.45) regardless of how many are already queued. Exit-daemon enforces MAX_POSITIONS at actual entry time (6:45am ORB check) — it enters candidates in score order and stops when MAX_POSITIONS confirmed entries are reached. This means on a day where the top 4 all fade, the #5 candidate still gets an ORB entry attempt. Observed July 8 2026: AVAV/MTZ/LYB/DOW all queued, all faded → BABA (0.47, +8.3%) was blocked and never queued → 0 trades. With v2, BABA would have been queued and gotten an ORB shot.
 
 ### Daily Loss Limit (1.5% of SOD balance)
 ```
@@ -1593,7 +1595,9 @@ Design decisions that were changed, and the reasoning behind each removal. Kept 
 
 **What we lose:** Entries on fast-moving gap-and-go names that run from 6:30am–6:45am before ORB confirmation. This is an acceptable trade-off — we're targeting confirmed gap holds, not first-candle momentum plays.
 
-**Implementation bug caught (July 2026):** `checkMaxConcurrent()` only read `trades-open.json`. With ORB, no positions are in `trades-open.json` at 6am (they appear at 6:45am after ORB entry). The gate was effectively 0 — the agent would have queued all 10 screener candidates. Fixed to also count `queued-trades.json` entries toward the MAX_POSITIONS cap.
+**Implementation bug v1 (July 2026):** `checkMaxConcurrent()` only read `trades-open.json`. Gate was effectively 0 at 6am with ORB — fixed to also count `queued-trades.json`.
+
+**Implementation bug v2 (July 8 2026):** Counting queued trades toward MAX_POSITIONS created the inverse problem: on days where all queued candidates fail ORB, backup candidates are blocked at queue time and the system exits with 0 trades. Fixed by removing queued trades from the gate entirely — agent queues all ≥0.45 scorers, exit-daemon enforces MAX_POSITIONS at entry.
 
 **Key learning:** Bugs in gating logic are easy to miss when the code path that validates the gate (checking open positions) is correct — but the underlying assumption (positions exist at gate-check time) changed with the new architecture. Whenever execution timing changes, re-examine every gate that reads state files.
 

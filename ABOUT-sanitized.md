@@ -806,7 +806,9 @@ Sized from **settled buying power** (not total equity) to avoid good-faith-viola
 ### Max Concurrent Positions
 `checkMaxConcurrent(openPositions)` — blocks new entries if at/above MAX_POSITIONS (4). Each trade also records `sector`, `sharedSector` (true if another open position is in the same GICS sector), and `marketDrivenDay` (true if |SPY change| > 1.5%) for correlation analysis at N=60.
 
-**ORB mode fix (July 2026):** `checkMaxConcurrent` now also reads `queued-trades.json` and counts those toward the cap. Without this, in LIVE/ORB mode the gate was effectively 0 (no positions in trades-open.json at 6am) and the agent would have queued all screener candidates instead of capping at 4.
+**ORB mode fix v1 (July 2026 — superseded):** `checkMaxConcurrent` also counted `queued-trades.json` toward the cap to prevent queuing all 10 candidates.
+
+**ORB mode fix v2 (July 8 2026):** Removed queued trades from the gate. Counting queued trades created the inverse bug: all 4 queued → all 4 fail ORB → backups blocked → 0 trades. Agent now queues every ≥0.45 scorer; exit-daemon enforces MAX_POSITIONS at actual entry. Observed July 8: AVAV/MTZ/LYB/DOW all faded, BABA (0.47, +8.3%) was never queued → 0 trades. Fixed going forward.
 
 ### Daily Loss Limit (1.5% of SOD balance)
 ```
