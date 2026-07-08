@@ -96,7 +96,7 @@ DAILY  6:25 AM — exit-daemon.js (long-running daemon, runs until 1pm PT)
                  • Stop/target hit → market sell immediately
                  • 6:35am: logs 5-min price mark for all queued ORB candidates
                  • 6:40am: logs 10-min price mark for all queued ORB candidates
-                 • 6:45am: ORB entry decision — for each queued candidate, fetches 15-min OR high.
+                 • 6:45am: ORB entry decision — for each queued candidate, fetches 10-min OR high (bars 1+2 only — bar3 excluded).
                  •   If current price > OR high → gap held → market buy submitted immediately.
                  •   If current price ≤ OR high → gap faded → candidate skipped (no entry).
                  •   All decisions logged to orb-log-YYYY-MM-DD.json for empirical window tuning.
@@ -1564,15 +1564,25 @@ Design decisions that were changed, and the reasoning behind each removal. Kept 
 
 **Why it was wrong:** Pre-market gaps on thin volume frequently fade at open. On analyst-upgrade days, stocks gap 2-4% pre-market then reverse as news is already priced in by institutions. Observed July 6 2026: all 4 candidates gapped pre-market then closed red. KLAC filled at -2.06% slippage vs decision price — slippage exceeded the stop distance before exit-daemon could act.
 
-**What replaced it:** ORB entry: agent queues candidates at 6am (no orders), exit-daemon logs prices at 6:35/6:40am, at 6:45am checks if price > 15-min ORB high. Gap held → buy. Gap faded → skip. All decisions logged to `orb-log-YYYY-MM-DD.json`. At 12:45pm (force-close), every ORB log entry (entered or not) gets `recoveredByClose = price > orHigh`.
+**What replaced it:** ORB entry: agent queues all ≥0.45 candidates at 6am (no MAX_POSITIONS cap at queue time), exit-daemon logs 5/10-min prices, at 6:45am checks price > 10-min OR high (bars 1+2 only — bar3 is the confirmation bar and excluded). MAX_POSITIONS enforced at entry, not at queue. Gap held → buy. Gap faded → skip. All decisions logged to `orb-log-YYYY-MM-DD.json` with catalystType, catalystTag, prevClose, effectiveGapPct, gapRetained, and OR variants (5/10/15-min highs + bar closes). At 12:45pm: `recoveredByClose` added to every entry.
 
-**Catalyst tagging:** Every ORB log entry carries `catalystType` (agent's existing 13-value enum) and `catalystTag` (`stale-news` vs `structural`). Mapping: `analyst_upgrade | insider_purchase | sector_sympathy | technical` → `stale-news`; all others → `structural`. This is a hypothesis; `recoveredByClose` will measure at N=20 whether the classification predicts recovery.
+**Catalyst tagging:** `catalystTag` (`stale-news` vs `structural`) mapped from agent's 13-value `catalystType`. Hypothesis: structural-catalyst fades recover more often. To be measured at N=20 via `recoveredByClose`.
 
-**STT case (July 7 2026):** Regulatory catalyst, gap faded, ORB skipped. Price recovered to target (+1.527R) by close. Tagging: `structural`, `recoveredByClose = true`. At N=20 we'll know if structural fades recover more often than stale-news fades.
+**STT case (July 7 2026):** Regulatory catalyst, gap faded, ORB skipped. Recovered to target (+1.527R) by close. `catalystTag = structural`, `recoveredByClose = true`. One data point.
+
+**Gap retention metric (July 8 2026):** `gapRetained = effectiveGapPct / originalGapPct`. July 8: MTZ ratio 1.80 (gap expanded, institutional buyers adding), AVAV ratio 0.46 (gap halved, distribution). Best separating signal found. Logged, not wired live — deferred to N=20.
+
+**ORB confirmation-bar bug (July 8 2026):** Original OR high used all 3 bars including bar3 (6:40-6:45am). At 6:45am, bar3's close was tested against a threshold bar3's own spike set — structurally unpassable. Fixed: OR high now uses bars 1+2 only. Correctness fix, not tuning.
+
+**Decision-price root cause (July 8 2026):** Decision price is set at 5:40am on thin pre-market volume, 50 minutes before real flow. All ORB filtering is downstream compensation for this stale anchor. Open design question: should the thesis re-anchor to the opening auction price?
+
+**RH probe (July 8 2026):** DAILY_GAINERS scanner at 5:40am returned 3 micro-cap tokens, zero S&P 500 names. Pre-market scanner is effectively empty. Yahoo 580-ticker loop stays.
+
+**Implementation bugs v1/v2:** v1 — MAX_POSITIONS gate counted queued trades, blocking backups when all faded (July 8: 0 trades). v2 — Fixed: queue all qualifiers, enforce at entry.
 
 **Key learning:** Whenever execution timing changes, re-examine every gate that reads state files — the underlying assumptions about when state is written may no longer hold.
 
 ---
 
-*Last updated: July 2026*
+*Last updated: July 8 2026*
 *Built using Claude Code*

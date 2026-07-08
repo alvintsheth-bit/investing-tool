@@ -96,10 +96,11 @@ DAILY  6:25 AM — exit-daemon.js (long-running daemon, runs until 1pm PT)
                  • Stop/target hit → market sell immediately
                  • 6:35am: logs 5-min price mark for all queued ORB candidates
                  • 6:40am: logs 10-min price mark for all queued ORB candidates
-                 • 6:45am: ORB entry decision — for each queued candidate, fetches 15-min OR high.
+                 • 6:45am: ORB entry decision — for each queued candidate, fetches 10-min OR high
+                 •   (max of bars 1+2 only — bar3 excluded, it is the confirmation bar being tested).
                  •   If current price > OR high → gap held → market buy submitted immediately.
                  •   If current price ≤ OR high → gap faded → candidate skipped (no entry).
-                 •   All decisions logged to orb-log-YYYY-MM-DD.json for empirical window tuning.
+                 •   All decisions logged to orb-log-YYYY-MM-DD.json with OR variants + gap retention.
                  • 6:45am also: tightens stop to OR low for existing PROTECTED positions
                  • Haiku thesis-break check every 90 min (VIX spike, halt news)
                  • Tracks MFE/MAE per position on every poll
@@ -1472,7 +1473,7 @@ Items are stacked: P1 = do now, P2 = after first 20 live trades, P3 = after firs
 | 28 | **Volatility-based position sizing** | Size inversely proportional to ATR: higher-ATR stocks get smaller positions so each trade contributes equal risk. Replaces the flat $125 with `risk_dollars / (ATR × some_multiplier)`. Improves risk-adjusted returns without changing edge. Trigger: 20+ trades to validate that the base edge is real first. |
 | 29 | **Realistic backtest cost modeling** | The logistic regression trains on historical trades. If those trades assumed mid-price fills and ignored slippage, the model is training on optimistic data. Bake a slippage assumption (e.g. 0.5% adverse on entry, 0.3% on exit) into `recordClosedTrade` P&L so the model trains on realistic net-of-cost outcomes. Trigger: 20+ live fills to calibrate realistic slippage distribution. |
 | 30 | **Signal decay / feature stability monitoring** | Track each signal's hit rate over rolling 30-trade windows. If `news_catalyst` was predictive in months 1-2 and trends toward random in month 3, the edge may be getting crowded. Plot per-signal P&L contribution over time. Trigger: 100+ trades for the rolling window to be meaningful. |
-| 32 | **Gap-fade entry filter — ORB entry at 6:45am** | ✅ Implemented July 2026. Agent no longer submits orders at 6am. Instead: (1) Agent queues qualifying candidates to `queued-trades.json` via `place_trade` (LIVE mode). (2) Exit-daemon logs 5-min and 10-min price marks at 6:35am and 6:40am. (3) At 6:45am, exit-daemon fetches the 15-min ORB high for each queued candidate. If current price > ORB high → gap held → market buy submitted; if price ≤ ORB high → gap faded → candidate skipped. All decisions logged to `orb-log-YYYY-MM-DD.json` for empirical window tuning. (4) At 12:45pm, every ORB log entry gets `recoveredByClose` + `catalystType` + `catalystTag` (stale-news vs structural) for post-session analysis. DRY_RUN behavior unchanged. Root cause: analyst-upgrade gaps on thin pre-market volume fade at open as institutions sell into retail. Observed July 6 2026: all 4 candidates gapped down at open after pre-market gap-up. |
+| 32 | **Gap-fade entry filter — ORB entry at 6:45am** | ✅ Implemented + refined July 2026. Agent queues qualifying candidates (≥0.45 score, no MAX_POSITIONS cap at queue time). Exit-daemon: (1) logs 5-min price at 6:35am, (2) logs 10-min price at 6:40am, (3) at 6:45am checks price vs 10-min OR high (bars 1+2 only — bar3 excluded, it is the confirmation bar). Gap held → buy; gap faded → skip. (4) At 12:45pm, every entry gets `recoveredByClose`, `catalystType`, `catalystTag`, `effectiveGapPct`, `gapRetained` (effective/original gap ratio). OR variants (5-min, 10-min, 15-min highs + bar closes) logged on every candidate for empirical window selection at N=20. Live decision uses 10-min OR (only valid choice — 15-min includes bar3's own spike in its threshold). |
 | 33 | **Daily candidate scorecard** | ✅ Implemented July 2026. `log_daily_candidates` tool writes `candidates-YYYY-MM-DD.json` at end of each session with rank, screenerRank, gapPct, compositeScore, signal breakdown, and action for all evaluated candidates. Enables signal correlation analysis at N=60. |
 | 31 | **Signal ensemble — second uncorrelated edge** | Momentum (gap-up) and mean-reversion profit in opposite regimes. Once the momentum edge is validated, adding a mean-reversion signal (e.g. large gap-down on a stock with strong fundamentals) creates an edge that fires in different conditions. Requires the first edge proven first — stacking two unproven edges just creates noise. Trigger: 100+ trades, momentum edge validated via holdout. |
 
@@ -1583,25 +1584,29 @@ Design decisions that were changed, and the reasoning behind each removal. Kept 
 **The mechanism:** If a gap is genuine (institutions adding, not just retail momentum), price holds above the first 15 minutes' high (opening range high) at 6:45am PT. If the gap is being faded (institutions selling into retail), price is already at or below the opening range high. This is a reliable institutional-grade filter used by professional traders.
 
 **What replaced it:** ORB (Opening Range Breakout) entry architecture:
-1. Agent queues qualifying candidates to `queued-trades.json` at 6am — no orders submitted
-2. Exit-daemon logs 5-min price (6:35am) and 10-min price (6:40am) for each queued candidate — empirical data for future window tuning
-3. At 6:45am: for each candidate, fetch the 15-min ORB high (max of 3 × 5-min bars from 6:30–6:45am). If current price > ORB high → gap held → submit market buy immediately. If current price ≤ ORB high → gap faded → skip, log reason.
-4. All decisions written to `orb-log-YYYY-MM-DD.json`
-5. At 12:45pm (force-close time): for every ORB log entry (entered or not), fetch closing price and set `recoveredByClose = price > orHigh`. This is the measurement that turns "stale-news vs structural catalyst" from argument into data.
+1. Agent queues all candidates scoring ≥0.45 to `queued-trades.json` at 6am — no orders, no MAX_POSITIONS cap at queue time
+2. Exit-daemon logs 5-min price (6:35am) and 10-min price (6:40am) for each queued candidate
+3. At 6:45am: fetch 10-min OR high (max of bars 1+2 only). If current price > OR high → gap held → buy. If ≤ → gap faded → skip. Exit-daemon enforces MAX_POSITIONS at this entry step, not at queue time.
+4. All decisions written to `orb-log-YYYY-MM-DD.json` with: `catalystType`, `catalystTag`, `prevClose`, `originalGapPct`, `effectiveGapPct`, `gapRetained`, `orbVariants` (5-min/10-min/15-min OR highs + bar closes)
+5. At 12:45pm: every entry gets `recoveredByClose = price > orHigh`
 
-**Catalyst tagging in the ORB log:** Every candidate in `orb-log-YYYY-MM-DD.json` carries `catalystType` (from the agent's existing 13-value enum) and `catalystTag` (`stale-news` or `structural`). Mapping: `analyst_upgrade | insider_purchase | sector_sympathy | technical` → `stale-news`. All others → `structural`. This mapping is a hypothesis — `recoveredByClose` will measure whether it predicts recovery at N=20.
+**Catalyst tagging:** `catalystType` (agent's 13-value enum) → `catalystTag` (`stale-news` or `structural`). `analyst_upgrade | insider_purchase | sector_sympathy | technical` → stale-news. All others → structural. Hypothesis to be validated at N=20 by `recoveredByClose`.
 
-**STT case study (July 7 2026):** Gap faded at open. ORB would have skipped it. But STT was a `regulatory` catalyst (Trump Accounts). Price recovered to target by close (+$0.78, 1.527R). Under the new tagging: `catalystTag = structural`, `recoveredByClose = true`. At N=20 we'll know if structural-catalyst fades recover more reliably than stale-news fades.
+**Gap retention metric (July 8 2026):** `gapRetained = effectiveGapPct / originalGapPct` — measures whether institutional flow expanded or contracted the gap after open. July 8 data: MTZ ratio 1.80 (gap expanded, M&A buyers adding), AVAV ratio 0.46 (gap halved, distribution). Strongest separating signal found so far. Logged but **not wired to any live decision** — deferred to N=20.
 
-**What we lose:** Entries on fast-moving gap-and-go names that run from 6:30am–6:45am before ORB confirmation. This is an acceptable trade-off — we're targeting confirmed gap holds, not first-candle momentum plays.
+**Decision price root cause (July 8 2026):** The decision price is set at 5:40am on thin pre-market volume, 50 minutes before real institutional flow. All ORB filtering is downstream compensation for this stale anchor. The deeper question — whether the thesis should re-anchor to the opening auction price once real volume exists — is an open design investigation, not yet resolved.
+
+**ORB confirmation-bar bug (July 8 2026):** Original `getOpeningRange()` used all 3 bars (6:30, 6:35, 6:40), making `orHigh = max(bar1, bar2, bar3)`. At 6:45am we compare bar3's close against a threshold bar3's own spike set — structurally unpassable. Fixed: `orHigh` now uses bars 1+2 only. Bar3 is the confirmation bar and cannot be part of the range it's tested against. This is a correctness fix, not a window-tuning decision.
 
 **Implementation bug v1 (July 2026):** `checkMaxConcurrent()` only read `trades-open.json`. Gate was effectively 0 at 6am with ORB — fixed to also count `queued-trades.json`.
 
-**Implementation bug v2 (July 8 2026):** Counting queued trades toward MAX_POSITIONS created the inverse problem: on days where all queued candidates fail ORB, backup candidates are blocked at queue time and the system exits with 0 trades. Fixed by removing queued trades from the gate entirely — agent queues all ≥0.45 scorers, exit-daemon enforces MAX_POSITIONS at entry.
+**Implementation bug v2 (July 8 2026):** Counting queued trades toward MAX_POSITIONS blocked backup candidates when all queued trades faded. Observed: AVAV/MTZ/LYB/DOW all queued → all faded → BABA (0.47, +8.3%) blocked at queue time → 0 trades. Fixed: agent queues all ≥0.45 scorers, exit-daemon enforces MAX_POSITIONS at actual entry.
+
+**RH pre-market scanner probe (July 8 2026):** `DAILY_GAINERS` scanner at 5:40am returned 3 tickers — all micro-cap crypto/penny tokens, zero S&P 500 names. `FILTER_TYPE_GAP` still fails with DXFeed 400 pre-market. Conclusion: RH scanner is empty before market open. Yahoo 580-ticker loop stays as the screener.
 
 **Key learning:** Bugs in gating logic are easy to miss when the code path that validates the gate (checking open positions) is correct — but the underlying assumption (positions exist at gate-check time) changed with the new architecture. Whenever execution timing changes, re-examine every gate that reads state files.
 
 ---
 
-*Last updated: July 2026*
+*Last updated: July 8 2026*
 *Built by Alvint Sheth using Claude Code*
