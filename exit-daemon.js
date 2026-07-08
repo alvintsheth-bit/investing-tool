@@ -171,7 +171,7 @@ async function getOpeningRange(ticker) {
     const orHigh_15min = b3 ? Math.max(b1.h, b2.h, b3.h) : orHigh_10min; // includes confirmation bar
 
     return {
-      orHigh:   orHigh_10min,  // live decision: bars closed before confirmation
+      orHigh:   orHigh_15min,  // live decision: conservative 15-min default, frozen until N=20
       orLow:    Math.min(...firstBars.map(b => b.l)),
       barsUsed: firstBars.length,
       // Empirical variants — logged on every candidate, not used for decisions until N=20
@@ -182,7 +182,7 @@ async function getOpeningRange(ticker) {
         bar1Close: b1?.c ?? null,
         bar2Close: b2?.c ?? null,
         bar3Close: b3?.c ?? null,
-        liveDefinition: 'orHigh_10min',
+        liveDefinition: 'orHigh_15min',
       },
     };
   } catch { return null; }
@@ -426,7 +426,12 @@ async function submitOrbEntry(candidate, openPositions) {
   const price = await getCurrentPrice(ticker);
   const orHigh = or?.orHigh ?? null;
 
-  const entry = { ticker, decisionPrice: candidate.decisionPrice, orHigh, currentPrice: price, barsUsed: or?.barsUsed ?? 0, catalystType, catalystTag, orbVariants: or?.variants ?? null, at: new Date().toISOString() };
+  const prevClose       = candidate.prevClose ?? null;
+  const originalGapPct  = prevClose ? +((candidate.decisionPrice - prevClose) / prevClose * 100).toFixed(2) : null;
+  const effectiveGapPct = prevClose && price ? +((price - prevClose) / prevClose * 100).toFixed(2) : null;
+  const gapRetained     = originalGapPct && effectiveGapPct != null ? +(effectiveGapPct / originalGapPct).toFixed(3) : null;
+
+  const entry = { ticker, decisionPrice: candidate.decisionPrice, orHigh, currentPrice: price, barsUsed: or?.barsUsed ?? 0, catalystType, catalystTag, prevClose, originalGapPct, effectiveGapPct, gapRetained, orbVariants: or?.variants ?? null, at: new Date().toISOString() };
 
   if (!orHigh || !price) {
     entry.decision = 'skip'; entry.reason = 'OR or price unavailable';

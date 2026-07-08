@@ -1335,6 +1335,7 @@ async function executeTool(name, input) {
         targetPrice:   rawTarget || parseFloat((decisionPrice * (1 + 0.0375)).toFixed(2)),
         atr14:  atr14  || null,
         signals: signals || {},
+        prevClose: screenerCandidate?.prevClose ?? null,
         setupScore, rationale, marketContext, samAlignment, catalystType: catalystType || null,
         sector: sector || null,
         sharedSector: sharedSector,
