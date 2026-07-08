@@ -150,19 +150,40 @@ async function getOpeningRange(ticker) {
     const result = await yahooChart(ticker, '1d', '5m');
     if (!result?.indicators?.quote?.[0]) return null;
     const timestamps = result.timestamp || [];
-    const highs = result.indicators.quote[0].high || [];
-    const lows  = result.indicators.quote[0].low  || [];
-    // Market open: 9:30am ET = 6:30am PT. Approximate UTC:
+    const q      = result.indicators.quote[0];
+    const highs  = q.high   || [];
+    const lows   = q.low    || [];
+    const closes = q.close  || [];
     const mktOpenUtcMs = new Date(`${today}T13:30:00Z`).getTime();
     const firstBars = timestamps
-      .map((t, i) => ({ ms: t * 1000, h: highs[i], l: lows[i] }))
+      .map((t, i) => ({ ms: t * 1000, h: highs[i], l: lows[i], c: closes[i] }))
       .filter(b => b.ms >= mktOpenUtcMs && b.h != null && b.l != null)
-      .slice(0, 3); // first 15 min
+      .slice(0, 3);
     if (!firstBars.length) return null;
+
+    const [b1, b2, b3] = firstBars;
+
+    // Bug fix: the confirmation bar (b3, 6:40–6:45am) cannot be part of the range
+    // its own price is tested against. orHigh (live decision) uses only bars whose
+    // close time precedes the 6:45am check — i.e., b1 and b2.
+    const orHigh_5min  = b1 ? b1.h : null;
+    const orHigh_10min = b2 ? Math.max(b1.h, b2.h) : orHigh_5min;
+    const orHigh_15min = b3 ? Math.max(b1.h, b2.h, b3.h) : orHigh_10min; // includes confirmation bar
+
     return {
-      orHigh: Math.max(...firstBars.map(b => b.h)),
-      orLow:  Math.min(...firstBars.map(b => b.l)),
+      orHigh:   orHigh_10min,  // live decision: bars closed before confirmation
+      orLow:    Math.min(...firstBars.map(b => b.l)),
       barsUsed: firstBars.length,
+      // Empirical variants — logged on every candidate, not used for decisions until N=20
+      variants: {
+        orHigh_5min,
+        orHigh_10min,
+        orHigh_15min,
+        bar1Close: b1?.c ?? null,
+        bar2Close: b2?.c ?? null,
+        bar3Close: b3?.c ?? null,
+        liveDefinition: 'orHigh_10min',
+      },
     };
   } catch { return null; }
 }
@@ -405,7 +426,7 @@ async function submitOrbEntry(candidate, openPositions) {
   const price = await getCurrentPrice(ticker);
   const orHigh = or?.orHigh ?? null;
 
-  const entry = { ticker, decisionPrice: candidate.decisionPrice, orHigh, currentPrice: price, barsUsed: or?.barsUsed ?? 0, catalystType, catalystTag, at: new Date().toISOString() };
+  const entry = { ticker, decisionPrice: candidate.decisionPrice, orHigh, currentPrice: price, barsUsed: or?.barsUsed ?? 0, catalystType, catalystTag, orbVariants: or?.variants ?? null, at: new Date().toISOString() };
 
   if (!orHigh || !price) {
     entry.decision = 'skip'; entry.reason = 'OR or price unavailable';
