@@ -171,7 +171,7 @@ async function getOpeningRange(ticker) {
     const orHigh_15min = b3 ? Math.max(b1.h, b2.h, b3.h) : orHigh_10min; // includes confirmation bar
 
     return {
-      orHigh:   orHigh_15min,  // live decision: conservative 15-min default, frozen until N=20
+      orHigh:   orHigh_10min,  // live decision: bars closed before confirmation (bar3 excluded — logic, not tuning)
       orLow:    Math.min(...firstBars.map(b => b.l)),
       barsUsed: firstBars.length,
       // Empirical variants — logged on every candidate, not used for decisions until N=20
@@ -182,7 +182,7 @@ async function getOpeningRange(ticker) {
         bar1Close: b1?.c ?? null,
         bar2Close: b2?.c ?? null,
         bar3Close: b3?.c ?? null,
-        liveDefinition: 'orHigh_15min',
+        liveDefinition: 'orHigh_10min',
       },
     };
   } catch { return null; }
