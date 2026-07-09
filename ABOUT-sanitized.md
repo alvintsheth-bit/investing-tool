@@ -369,14 +369,10 @@ isMarketDay()?
 ```
 screener.js (launchd job):
   Builds universe:
-    • 83 core tickers (hand-curated: major-exchange listed, ~$10B+ market cap,
-      $50M+ avg daily dollar volume, β ≥ ~1.5 preferred, no OTC, no recent IPOs.
-      Buckets: mega-cap tech/AI, semis, financials, industrials, energy,
-      healthcare/biotech, consumer, materials, China ADRs, Bitcoin miners, high-beta/momentum.
-      Last rebalanced June 2026: cut 14 low-beta/thin names (PANW, RGTI, V, HON,
-      RTX, UNH, ABBV, MCD, WMT, BIDU, JD, ACHR, ACMR, SPCX); added 15 high-beta
-      catalysts (MARA, RIOT, AFRM, UPST, SOFI, RDDT, RIVN, SNAP, CELH, HIMS,
-      PINS, LYFT, APP, SPOT, DUOL).)
+    • 580 tickers from output/universe.json (S&P 500 from Wikipedia + NASDAQ 100 +
+      curated high-beta seeds: China ADRs, Bitcoin miners, momentum names).
+      Refreshed monthly by universe-refresh.js (1st of month, 5am PT).
+      [Previously: 83 hand-curated tickers — superseded July 2026]
     • + after-market-close earnings from yesterday (FMP) — reported after yesterday's close,
         pre-market gap reflects overnight reaction. Phase 2 hard-excludes these
         from same-day trading; they surface for next-day watching only.

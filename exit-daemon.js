@@ -459,22 +459,34 @@ async function submitOrbEntry(candidate, openPositions) {
 
   // Confirm fill (market is open, should fill within seconds)
   await sleep(3000);
-  let fillPrice = price; // fallback
-  let slippage  = 0;
+  const orbCheckPrice = price; // price daemon observed when deciding to enter — reference for exec quality
+  let fillPrice = orbCheckPrice; // fallback
   if (!DRY_RUN) {
     const acct = await getRHAccountNumber();
     const ordersResult = await rhMCP('get_equity_orders', { account_number: acct, symbol: ticker, placed_agent: 'agentic', state: 'filled' });
     const buyOrder = (ordersResult?.data?.orders || []).find(o => o.side === 'buy');
-    if (buyOrder?.average_price) {
-      fillPrice = parseFloat(buyOrder.average_price);
-      slippage  = +((fillPrice - candidate.decisionPrice) / candidate.decisionPrice * 100).toFixed(2);
-    }
-  } else {
-    fillPrice = price; // DRY: use current price as fill
+    if (buyOrder?.average_price) fillPrice = parseFloat(buyOrder.average_price);
+  }
+
+  // execSlippage: fill vs orbCheckPrice — measures execution quality only.
+  // decisionSlippage: fill vs decisionPrice — measures total thesis drift (logged for analysis, not gated).
+  // ORB already adjudicated thesis drift (price > OR high); the gate's job is catching bad execution.
+  const atrPct          = candidate.atr14 ? parseFloat(candidate.atr14) / candidate.decisionPrice : 0.025;
+  const execSlippage    = +((fillPrice - orbCheckPrice) / orbCheckPrice * 100).toFixed(2);
+  const decisionSlippage = +((fillPrice - candidate.decisionPrice) / candidate.decisionPrice * 100).toFixed(2);
+
+  // Slippage gate: if execution slippage exceeds 50% of stop distance, sell immediately.
+  if (!DRY_RUN && execSlippage > atrPct * 50) {
+    const gateReason = `exec slippage ${execSlippage.toFixed(2)}% > ${(atrPct * 50).toFixed(2)}% limit`;
+    console.warn(`  🚫 [${ticker}] Slippage gate: ${gateReason} — immediate exit`);
+    await executeSell(ticker, fillPrice, candidate.dollarAmount, candidate.fractionalQty, `slippage-gate: ${gateReason}`);
+    entry.decision = 'slippage-gate'; entry.reason = gateReason;
+    entry.fillPrice = fillPrice; entry.execSlippage = execSlippage; entry.decisionSlippage = decisionSlippage;
+    orbLog.entries.push(entry); saveOrbLog();
+    return false;
   }
 
   // Anchor stop/target to confirmed fill price
-  const atrPct      = candidate.atr14 ? parseFloat(candidate.atr14) / candidate.decisionPrice : 0.025;
   const stopPrice   = parseFloat((fillPrice * (1 - atrPct)).toFixed(2));
   const targetPrice = parseFloat((fillPrice * (1 + atrPct * 1.5)).toFixed(2));
 
@@ -483,13 +495,15 @@ async function submitOrbEntry(candidate, openPositions) {
     ...candidate,
     state:       TRADE_STATES.PROTECTED,
     entryPrice:  fillPrice,
-    slippagePct: slippage,
+    slippagePct: execSlippage,
+    decisionSlippage,
+    orbCheckPrice,
     stopPrice, targetPrice,
     currentPnl: 0, maxFavorableExcursion: 0, maxAdverseExcursion: 0,
     stateHistory: [
       ...(candidate.stateHistory || []),
-      { state: 'FILLED',     at: new Date().toISOString(), fillPrice, slippage, note: 'ORB fill' },
-      { state: 'PROTECTED',  at: new Date().toISOString(), stopPrice, targetPrice, anchoredToFill: true },
+      { state: 'FILLED', at: new Date().toISOString(), fillPrice, execSlippage, decisionSlippage, orbCheckPrice, note: 'ORB fill' },
+      { state: 'PROTECTED', at: new Date().toISOString(), stopPrice, targetPrice, anchoredToFill: true },
     ],
   };
 
@@ -497,10 +511,10 @@ async function submitOrbEntry(candidate, openPositions) {
   openData.positions.push(posRecord);
   atomicWrite(OPEN_POSITIONS_FILE, openData);
 
-  entry.fillPrice = fillPrice; entry.slippage = slippage; entry.stopPrice = stopPrice; entry.targetPrice = targetPrice;
+  entry.fillPrice = fillPrice; entry.execSlippage = execSlippage; entry.decisionSlippage = decisionSlippage; entry.stopPrice = stopPrice; entry.targetPrice = targetPrice;
   orbLog.entries.push(entry); saveOrbLog();
 
-  console.log(`  ✅ [${ticker}] ORB fill @ $${fillPrice} (slippage ${slippage > 0 ? '+' : ''}${slippage}%) | stop $${stopPrice} | target $${targetPrice}`);
+  console.log(`  ✅ [${ticker}] ORB fill @ $${fillPrice} (exec slip ${execSlippage > 0 ? '+' : ''}${execSlippage}% vs ORB price | decision slip ${decisionSlippage > 0 ? '+' : ''}${decisionSlippage}%) | stop $${stopPrice} | target $${targetPrice}`);
   return true;
 }
 
