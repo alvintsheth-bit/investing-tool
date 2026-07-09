@@ -383,6 +383,16 @@ async function logOrbRecovery() {
     entry.closePrice       = price ?? null;
     entry.recoveredByClose = price != null && entry.orHigh != null ? price > entry.orHigh : null;
     console.log(`  [${entry.ticker}] close $${price?.toFixed(2) ?? 'n/a'} | OR high $${entry.orHigh?.toFixed(2) ?? 'n/a'} | recovered: ${entry.recoveredByClose}`);
+    // Force-close any shadow position still open at EOD
+    const s = entry.shadow;
+    if (s && s.result == null && price != null) {
+      const riskAmount = s.entryPrice - s.stopPrice;
+      s.result    = 'force-closed';
+      s.exitPrice = price;
+      s.pnlR      = riskAmount > 0 ? +((price - s.entryPrice) / riskAmount).toFixed(2) : 0;
+      s.exitAt    = new Date().toISOString();
+      console.log(`  [${entry.ticker}] Shadow force-closed @ $${price.toFixed(2)} | pnlR: ${s.pnlR >= 0 ? '+' : ''}${s.pnlR}R`);
+    }
     await sleep(300);
   }
   saveOrbLog();
@@ -442,7 +452,18 @@ async function submitOrbEntry(candidate, openPositions) {
 
   if (price <= orHigh) {
     entry.decision = 'fade'; entry.reason = `price $${price.toFixed(2)} ≤ OR high $${orHigh.toFixed(2)} — gap faded`;
-    console.log(`  [${ticker}] ORB FADE — price $${price.toFixed(2)} ≤ OR high $${orHigh.toFixed(2)} — sitting out`);
+    // Shadow trade: paper-track the fade intraday using same ATR stops/targets.
+    // isShadow ensures this never mixes with live expectancy calculations.
+    const shadowAtrPct = candidate.atr14 ? parseFloat(candidate.atr14) / candidate.decisionPrice : 0.025;
+    entry.shadow = {
+      isShadow: true, entryMechanism: 'orb',
+      entryPrice:  price,
+      stopPrice:   +(price * (1 - shadowAtrPct)).toFixed(2),
+      targetPrice: +(price * (1 + shadowAtrPct * 1.5)).toFixed(2),
+      atrPct: shadowAtrPct,
+      result: null, exitPrice: null, pnlR: null, exitAt: null,
+    };
+    console.log(`  [${ticker}] ORB FADE — sitting out | shadow @ $${price.toFixed(2)} stop $${entry.shadow.stopPrice} target $${entry.shadow.targetPrice}`);
     orbLog.entries.push(entry); saveOrbLog();
     return false;
   }
@@ -493,6 +514,8 @@ async function submitOrbEntry(candidate, openPositions) {
   // Build position record and write to trades-open.json
   const posRecord = {
     ...candidate,
+    entryMechanism: 'orb',
+    isShadow: false,
     state:       TRADE_STATES.PROTECTED,
     entryPrice:  fillPrice,
     slippagePct: execSlippage,
@@ -782,6 +805,32 @@ async function main() {
       }
 
       await sleep(300); // small gap between ticker polls
+    }
+
+    // ── Shadow positions: paper-track ORB fades intraday ──────────────────────
+    // Never mixes with live expectancy — isShadow flag separates all analysis.
+    if (openingRangeComputed) {
+      const fadedEntries = orbLog.entries.filter(e => e.decision === 'fade' && e.shadow?.result == null);
+      for (const shadow of fadedEntries) {
+        const s = shadow.shadow;
+        if (!s?.entryPrice) continue;
+        const price = await getCurrentPrice(shadow.ticker);
+        if (price == null) continue;
+        const riskAmount = s.entryPrice - s.stopPrice;
+        if (price <= s.stopPrice) {
+          s.result = 'stop-hit'; s.exitPrice = price; s.pnlR = -1; s.exitAt = new Date().toISOString();
+          console.log(`  [${shadow.ticker}] 📉 Shadow stop @ $${price.toFixed(2)} | -1R (entry $${s.entryPrice})`);
+          saveOrbLog();
+        } else if (price >= s.targetPrice) {
+          s.result = 'target-hit'; s.exitPrice = price; s.pnlR = 1.5; s.exitAt = new Date().toISOString();
+          console.log(`  [${shadow.ticker}] 📈 Shadow target @ $${price.toFixed(2)} | +1.5R (entry $${s.entryPrice})`);
+          saveOrbLog();
+        } else {
+          const unrealizedR = riskAmount > 0 ? +((price - s.entryPrice) / riskAmount).toFixed(2) : 0;
+          console.log(`  [${shadow.ticker}] Shadow $${price.toFixed(2)} | stop=$${s.stopPrice} target=$${s.targetPrice} | ${unrealizedR >= 0 ? '+' : ''}${unrealizedR}R (paper)`);
+        }
+        await sleep(300);
+      }
     }
 
     // Save updated MFE/MAE and currentPnl

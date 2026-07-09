@@ -1341,6 +1341,8 @@ async function executeTool(name, input) {
         sharedSector: sharedSector,
         marketDrivenDay: Math.abs(parseFloat(regime?.spyChangePct ?? 0)) > 1.5,
         regime: regime || null,
+        entryMechanism: 'orb',
+        isShadow: false,
         entryTime:  new Date().toISOString(),
         entryPrice: decisionPrice, // updated to confirmed fill below
         slippagePct: 0,
