@@ -375,9 +375,13 @@ screener.js (launchd job):
       Refreshed monthly by universe-refresh.js (1st of month, 5am PT).
       [Previously: 83 hand-curated tickers — superseded July 2026]
     • + after-market-close earnings from yesterday (FMP) — reported after yesterday's close,
-        pre-market gap reflects overnight reaction. Phase 2 hard-excludes these
-        from same-day trading; they surface for next-day watching only.
-        BMO reporters are excluded — Phase 2 blocks them same-day anyway.
+        pre-market gap reflects the overnight reaction. These ARE eligible for same-day trading
+        (today is the day after their report; the catalyst resolved last night, no event risk
+        during the hold). Phase 2 hard-excludes only TODAY's reporters (earnings during the hold
+        = unresolved event risk). catalystType: earnings_beat / earnings_miss / guidance_raise
+        are valid enum values for AMC-yesterday setups. THIS IS THE RICHEST CATALYST CLASS —
+        do not add exclusion logic here without explicit deliberate decision.
+        BMO today reporters are excluded — Phase 2 blocks them (event resolves mid-hold).
     • + yesterday's watchlist (candidates that scored 0.35–0.45 the prior session)
 
   Quality filter per ticker (screenTicker):
