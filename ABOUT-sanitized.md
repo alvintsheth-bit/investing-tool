@@ -545,11 +545,13 @@ DRY_RUN = true (default)?
 └── NO  (live) → submit market order to Robinhood
                   │   (fractional shares require market orders — limit orders not supported)
                   ├── ORDER_SUBMITTED → poll for fill confirmation
-                  ├── Fill received → compute slippage = (fill - decision) / decision
-                  │   ├── slippage > 50% of stop distance → SLIPPAGE GATE:
+                  ├── Fill received → compute execSlippage = (fill - orbCheckPrice) / orbCheckPrice
+                  │             and  decisionSlippage = (fill - decisionPrice) / decisionPrice (logged only)
+                  │   ├── execSlippage > 50% of stop distance → SLIPPAGE GATE:
                   │   │     immediately exit position, record as closed, return blocked
-                  │   │     (thesis already compromised before first bar)
-                  │   ├── slippage > 2% → log warning
+                  │   │     (orbCheckPrice = 6:45am price; decisionPrice excluded — ORB already
+                  │   │      adjudicated 5:40am→6:45am drift; gate measures exec quality only)
+                  │   ├── execSlippage > 2% → log warning
                   │   └── record fill price
                   └── state: CANDIDATE → ORDER_SUBMITTED → ORDER_PENDING → FILLED → PROTECTED
                       trades-open.json updated with fill price, stop, target
@@ -779,7 +781,7 @@ Each trade gets a dedicated markdown file documenting:
 - **All 10 signal verdicts** — ✅ or ❌ for each signal
 - **Stop/target levels** — ATR-14 at entry; opening-range stop updated after 6:45am PT if OR low is tighter (never loosens); immediate exit if price already below new OR stop when check fires
 - **Fill price confirmation** — live mode polls broker post-order for actual fill; slippage always logged, warning at >2%
-- **Slippage gate (implemented)** — if fill slippage exceeds 50% of the stop distance, the position is immediately exited and recorded as closed. Rationale: a fill that eats more than half the stop means the thesis is already compromised before the first bar prints.
+- **Slippage gate (implemented)** — `execSlippage = (fill - orbCheckPrice) / orbCheckPrice`. If execSlippage exceeds 50% of the stop distance, the position is immediately exited and recorded as closed. Reference is `orbCheckPrice` (6:45am price), not `decisionPrice` (5:40am) — ORB already adjudicated the 5:40am→6:45am drift. A separate `decisionSlippage` is logged for analysis but never gated on.
 - **Order state machine** — every trade tracks explicit states with timestamps:
   `CANDIDATE → ORDER_SUBMITTED → ORDER_PENDING → FILLED → PROTECTED → EXIT_PENDING → CLOSED`
   Stop/target only enforced once `PROTECTED`. Entry slippage computed at `FILLED` state from confirmed fill price.
