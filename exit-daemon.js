@@ -650,6 +650,12 @@ async function main() {
       break;
     }
 
+    // ── ORB recovery log — must run even on all-fade days with no open positions ─
+    if (!orbRecoveryLogged && ptNow >= forceCloseTime && orbLog.entries.length) {
+      orbRecoveryLogged = true;
+      await logOrbRecovery();
+    }
+
     const openData    = loadOpenPositions();
     const queuedTrades = loadQueuedTrades();
     if (!openData.positions.length && !queuedTrades.length) {
@@ -728,12 +734,6 @@ async function main() {
       for (const { pos, price } of immediateExits) {
         await closePosition(pos, price, `or-stop-immediate ($${price.toFixed(2)} ≤ OR low $${pos.stopPrice})`);
       }
-    }
-
-    // ── ORB recovery log (at force-close time, before closing positions) ─────
-    if (!orbRecoveryLogged && ptNow >= forceCloseTime && orbLog.entries.length) {
-      orbRecoveryLogged = true;
-      await logOrbRecovery();
     }
 
     // ── Force-close time ──────────────────────────────────────────────────────
