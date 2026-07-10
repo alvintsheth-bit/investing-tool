@@ -46,8 +46,7 @@ Any change to entry logic resets the live-trade clock to zero. That reset cost m
 | Stop/target | ATR14 x 0.75 clamped 1-4%; target 1.5x stop; OR-low tightening; force-close 12:45pm PT |
 | Score threshold | >= 0.45 (bootstrap value, lowered from 0.55; see Fitted Decision F4) |
 | API cost | ~$11/month (Sonnet 4.6 scan, Haiku 4.5 EOD; frozen through N=60) |
-| Advisory subscription | $[VERIFY]/month (see Section 12) |
-| Bounded worst case | ~$17/day, ~$57/week capital; total experiment cost ~$100-200/month incl. subscriptions |
+| Bounded worst case | ~$17/day, ~$57/week capital; total experiment cost ~$11-12/month in direct agent costs |
 
 **Primary metric:** expectancy per live trade in R, net of execution slippage (`execSlippage`), with 95% confidence interval. Reported alongside: win rate, profit factor, avg win R, avg loss R, trades/day distribution.
 
@@ -160,9 +159,9 @@ Explicit non-triggers, named because each has already produced the itch once:
 
 ## 12. Advisor Subscription Verdict
 
-The advisory service currently influences no measurable decision (by design: no context pre-load, no veto, no score effect). Cost: $[VERIFY]/month, likely the largest line item.
+The advisory service is independent of this agent and treated as such — its cost is excluded from the agent's cost calculus entirely. It influences no measurable decision (no context pre-load, no veto, no score effect).
 
-`advisorStance` **consciously not implemented** (decision locked 2026-07-10): the advisor will not have per-trade views on the short-duration gap-and-run names this system trades. Logging a field that is structurally null produces noise, not signal. **Cancel at C3 is locked** — the subscription will be cancelled at the C3 checkpoint unless a concrete, pre-registered use case is identified before then.
+`advisorStance` **consciously not implemented** (decision locked 2026-07-10): the advisor will not have per-trade views on the short-duration gap-and-run names this system trades. Logging a field that is structurally null produces noise, not signal. This section is closed; no verdict required at C3.
 
 ---
 

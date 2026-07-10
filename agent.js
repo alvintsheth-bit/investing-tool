@@ -1813,7 +1813,19 @@ Keep it concise — max 500 words total. Details live in log files.`;
 }
 
 // ─── Email ────────────────────────────────────────────────────────────────────
-async function sendEODEmail(reportText, closedTrades, benchmarks = {}) {
+function countResolvedFades() {
+  const files = readdirSync(OUTPUT_DIR).filter(f => /^orb-log-\d{4}-\d{2}-\d{2}\.json$/.test(f));
+  let total = 0;
+  for (const f of files) {
+    try {
+      const log = JSON.parse(readFileSync(join(OUTPUT_DIR, f), 'utf-8'));
+      total += (log.entries || []).filter(e => e.decision === 'fade' && e.shadow?.result != null).length;
+    } catch { /* skip malformed */ }
+  }
+  return total;
+}
+
+async function sendEODEmail(reportText, closedTrades, benchmarks = {}, c1Alert = null) {
   const user = process.env.GMAIL_USER;
   const pass = process.env.GMAIL_APP_PASSWORD;
   if (!user || !pass) { console.log('  ⚠️  Email skipped — GMAIL_USER/GMAIL_APP_PASSWORD not set'); return; }
@@ -1824,7 +1836,9 @@ async function sendEODEmail(reportText, closedTrades, benchmarks = {}) {
 
   const fmtB = q => q?.changePercent != null ? `${q.changePercent >= 0 ? '+' : ''}${q.changePercent.toFixed(2)}%` : 'n/a';
   const benchStr = `SPY ${fmtB(benchmarks.spy)} | QQQ ${fmtB(benchmarks.qqq)} | IWM ${fmtB(benchmarks.iwm)}`;
-  const subject  = `📈 EOD ${today} | ${pnlStr} | ${wins}W/${closedTrades.length - wins}L | ${benchStr}`;
+  const subject  = c1Alert
+    ? `🔔 C1 CHECKPOINT | EOD ${today} | ${pnlStr} | ${wins}W/${closedTrades.length - wins}L | ${benchStr}`
+    : `📈 EOD ${today} | ${pnlStr} | ${wins}W/${closedTrades.length - wins}L | ${benchStr}`;
 
   // Fetch EOD close + day high for each trade in parallel
   const dayStats = await Promise.all(
@@ -1861,8 +1875,14 @@ async function sendEODEmail(reportText, closedTrades, benchmarks = {}) {
     </tr>`;
   }).join('');
 
+  const c1Banner = c1Alert ? `
+<div style="background:#fff3cd;border:2px solid #d4a017;border-radius:6px;padding:16px;margin-bottom:20px;">
+  <strong>🔔 C1 CHECKPOINT REACHED</strong><br>
+  <span style="font-size:13px;">${c1Alert}</span>
+</div>` : '';
+
   const html = `<html><body style="font-family:monospace;max-width:800px;margin:auto;padding:24px;">
-<h2>📈 Day Trade EOD — ${today}</h2>
+${c1Banner}<h2>📈 Day Trade EOD — ${today}</h2>
 <p><strong>${pnlStr}</strong> | ${wins}W / ${closedTrades.length - wins}L | ${DRY_RUN ? '🔷 DRY RUN' : '🚨 LIVE'}</p>
 <p style="color:#555;font-size:13px;">Market: ${benchStr}</p>
 ${closedTrades.length ? `
@@ -2246,7 +2266,13 @@ async function runEOD() {
     } catch (e) { console.warn(`  ⚠️  Could not update rejected candidates: ${e.message}`); }
   }
 
-  await sendEODEmail(reportText, closedToday, benchmarks);
+  const resolvedFades = countResolvedFades();
+  console.log(`  [EOD] Resolved fades to date: ${resolvedFades} (C1 threshold: 20)`);
+  const c1Alert = resolvedFades >= 20
+    ? `${resolvedFades} resolved fades logged. Open PRE-REG.md and run the C1 analysis: H3 tag recovery rates, H7 trigger replay, F1 kill check, F2 window selection, H4/H5/H8 first read, gapRetained bucket sweep.`
+    : null;
+
+  await sendEODEmail(reportText, closedToday, benchmarks, c1Alert);
 }
 
 // ─── Main ─────────────────────────────────────────────────────────────────────
