@@ -1,7 +1,7 @@
 # Pre-Registration: Day Trading Agent Edge Validation
 
 **Author:** Alvint Sheth  
-**Registered:** July 9, 2026 (before earnings-season data collection begins)  
+**Registered:** July 10, 2026 (first commit timestamp; git history is the proof of predating)  
 **System version:** Frozen as of commit 450de60 (ORB entry regime, slippage gate re-anchored in ffc70bd/26dfdf8)  
 **Repo:** investing-tool
 
@@ -25,7 +25,7 @@ Any change to live entry, scoring, or exit logic outside (c) and (d) voids the c
 
 - **Live trade (confirmatory):** `isLive: true` AND `entryMechanism: 'orb'`. The clock started **July 8, 2026**. Live trade count as of registration: **0**.
 - **Pre-ORB trades:** identified by absence of `entryMechanism`. **6 trades** under the open-fill regime: ARM (Jun 24, ~0%), MU (Jun 25, +17.1%), META (Jul 1, +2.7%), RIVN (Jul 2, +3.7%), KLAC (Jul 6, -2.1%), STT (Jul 7, +0.6%). These are **excluded from all confirmatory analysis** and used only as context.
-- **Fade record:** an ORB-skipped candidate with a shadow sub-record (`isShadow: true`) tracking paper stop/target from `orbCheckPrice`. Count at registration: **8** (July 8: 4, July 9: 4).
+- **Fade record:** an ORB-skipped candidate with a shadow sub-record (`isShadow: true`) tracking paper stop/target from `orbCheckPrice`. Count at registration: **12** (July 8: 4, July 9: 4, July 10: 4). Resolved at registration (N=9): 4 stop-hits at -1R (AVAV backfill, AMAT, TER, MSTR), 3 force-closes negative (MTZ -0.35R, MU -0.73R, META -0.21R), 2 force-closes positive (LYB +0.12R, DOW +0.15R); average pnlR **-0.65R**. Supports H6 (ORB blocking real losses). Jul 10 COIN/HOOD/META unresolved as of registration.
 - **Shadow outcomes are never included in live expectancy.** They inform threshold and filter calibration only (no slippage reality in paper fills).
 
 Any change to entry logic resets the live-trade clock to zero. That reset cost must be weighed explicitly in every checkpoint decision.
@@ -61,14 +61,14 @@ These three, and only these three, receive confirmatory status. Everything else 
 
 - **H1 (core edge):** Live ORB entries with setup_score >= 0.45 have positive net expectancy per trade (R > 0, net of execSlippage).
 - **H2 (ORB adds value):** ORB-skipped candidates underperform ORB entries. Test: mean shadow R of skips < mean live R of entries. (H2 failing in the extreme direction triggers Fitted Decision F1's kill criterion.)
-- **H3 (catalyst quality):** Fades tagged `structural` recover by close (`recoveredByClose: true`) at a materially higher rate than fades tagged `stale-news`. Evidence at registration: July 8 dented this (4 structural fades, 0 recoveries); STT (July 7) supports it. N=2 days. Judged at N=20 fades.
+- **H3 (catalyst quality):** Fades tagged `structural` recover by close (`recoveredByClose: true`) at a materially higher rate than fades tagged `stale-news`. Evidence at registration: July 8 dented this (4 structural fades, 0 recoveries); STT (July 7) supports it. N=2 days. Judged at N=20 fades. **Rejection bar:** structural recovery rate must exceed stale-news recovery rate by ≥ 10 percentage points at N=20 per tag; if difference < 10 pp (or structural rate is lower), the boundary is not predictive and must be redrawn at C1.
 
 ---
 
 ## 5. Exploratory Hypotheses (logged evidence only; no live changes before checkpoints)
 
-- **H4 (sector-wide upgrades):** Candidates whose catalyst is a sector-wide analyst call underperform stock-specific catalysts (lower ORB pass rate, lower R). Proposed July 9 at N=2 days; parked.
-- **H5 (queue concentration):** Sessions where 3+ queued candidates share a sector produce lower ORB pass rates and worse outcomes (the move is macro, not idiosyncratic). Instrumentation: `queueSectorConcentration` flag (logging-only addition, permitted).
+- **H4 (sector-wide upgrades):** Candidates whose catalyst is a sector-wide analyst call underperform stock-specific catalysts (lower ORB pass rate, lower R). Proposed July 9 at N=2 days; parked. **Rejection bar:** sector-wide upgrade candidates must show fade rate ≥ 20 percentage points higher than stock-specific catalyst candidates at N=20 per bucket; else the distinction is not actionable.
+- **H5 (queue concentration):** Sessions where 3+ queued candidates share a sector produce lower ORB pass rates and worse outcomes (the move is macro, not idiosyncratic). Instrumentation: `queueSectorConcentration` flag (logging-only addition, permitted). **Rejection bar:** concentrated sessions (3+ same-sector) must show ORB fade rate ≥ 20 percentage points higher than diverse sessions at N=20 session-days per bucket; else no scoring change is warranted.
 - **H6 (rotation-day standdown):** On broad sector-rotation days, the correct trade count is zero. Subsumes H5; only actionable if H5 confirms strongly.
 - **H7 (trigger vs snapshot ORB):** A trigger entry (enter on first cross of the OR high in a 6:45-7:30am PT window, same ATR stop/target from trigger price, same force-close) outperforms the snapshot check net of false breakouts. **Replay methodology:** at N=20 fades, replay every skip and every entry against the trigger rule using 5-min bars; compare total R across the three arms (snapshot / trigger / no-filter shadow). Evidence at registration: July 9 replay favored snapshot (trigger takes MU ~scratch and STX ~-1R; snapshot took neither). Adoption bar: trigger must beat snapshot by >= 0.2R per candidate across the full replay set, else snapshot stays.
 - **H8 (gap grading composite):** Institutional commitment is measurable post-open via the existing instrumentation: RVOL (pending Robinhood scanner probe), `gapRetained`, catalyst specificity (H4), and sector breadth (H5). These jointly predict ORB pass and subsequent R better than any single filter. This is the framing lens for the N=20 analysis, not a filter to wire.
@@ -102,7 +102,7 @@ Rule: only H1-H3 are confirmatory at N=60. Every other pattern the tables surfac
 
 | Checkpoint | Trigger | Analysis | Permitted actions |
 |---|---|---|---|
-| **C1: Fades** | N=20 fade records (~1-2 weeks at current rate) | H3, H7 replay, F1 kill check, F2 window selection, H4/H5/H8 first read, gapRetained threshold sweep vs recoveredByClose and shadow R | At most **one** entry-logic change, only if it clears its pre-stated bar; clock reset acknowledged in Changelog |
+| **C1: Fades** | N=20 fade records (~1-2 weeks at current rate) | H3, H7 replay, F1 kill check, F2 window selection, H4/H5/H8 first read, `gapRetained` threshold sweep vs `recoveredByClose` and shadow R using pre-specified buckets: **< 0.7** (gap mostly faded) vs **> 1.0** (gap fully retained or extended); bucket must show ≥ 20 pp difference in recovery rate to be actionable | At most **one** entry-logic change, only if it clears its pre-stated bar; clock reset acknowledged in Changelog |
 | **C2: Early live** | N=20 live trades | Slippage distribution calibration (backlog #29), volatility-based sizing review (#28), F5 target-coupling read | Sizing/exit refinements only if MFE/slippage data clearly support; entry logic untouched |
 | **C3: Primary** | N=60 live trades | H1 confirmatory test (expectancy + 95% CI), out-of-sample harness, F4 threshold review, advisor verdict (Section 12), catalyst x regime pivots (exploratory only) | Continue / halt-and-overhaul / stop per Section 9 |
 | **C4: Scale** | N=150 live trades | Expectancy stability, regime coverage review | Scale per Section 9 |
@@ -162,8 +162,7 @@ Explicit non-triggers, named because each has already produced the itch once:
 
 The advisory service currently influences no measurable decision (by design: no context pre-load, no veto, no score effect). Cost: $[VERIFY]/month, likely the largest line item.
 
-- If `advisorStance` (agree / disagree / no-view) is logged per trade by C3: keep the subscription iff advisor agreement shows a material positive association with R.
-- If the field is not implemented by C3, or shows no association: **cancel at C3 by default.** Paying indefinitely for untested context fails the cost mandate.
+`advisorStance` **consciously not implemented** (decision locked 2026-07-10): the advisor will not have per-trade views on the short-duration gap-and-run names this system trades. Logging a field that is structurally null produces noise, not signal. **Cancel at C3 is locked** — the subscription will be cancelled at the C3 checkpoint unless a concrete, pre-registered use case is identified before then.
 
 ---
 
@@ -179,3 +178,4 @@ Scan stays on Sonnet 4.6 and EOD on Haiku 4.5 through C3. Rationale: the LLM sit
 |---|---|---|---|
 | 2026-07-09 | Document registered | — | Baseline |
 | 2026-07-10 | Pre-ORB count corrected to 6 (ARM, MU, META, RIVN, KLAC, STT); H9 added to Section 5 with N=5 replay evidence (-2.16R); C1 methodology notes added to Section 8 (daemon-logged prices canonical, backfill tagging); Jul 8 shadow backfill completed in orb-log | (a), (b) | Factual correction; logging-only instrumentation; backfill restores instrumentation integrity |
+| 2026-07-10 | Registration date corrected to Jul 10 (git timestamp authoritative); fade count updated 8→12 with N=9 resolved tally (-0.65R avg); rejection bars added to H3 (≥10 pp), H4 (≥20 pp), H5 (≥20 pp); gapRetained buckets pre-specified (<0.7, >1.0) in C1; advisorStance consciously not implemented — cancel-at-C3 locked | (a) | Factual corrections; pre-specifying numeric bars before C1 data exists |
