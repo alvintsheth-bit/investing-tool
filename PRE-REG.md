@@ -117,6 +117,7 @@ Expected pace: at 1-2 live entries/day average, C3 arrives in roughly 6-10 weeks
 - **Regime separation:** Trades with `entryMechanism: 'orb'` (post-Jul-8) are a different system from pre-Jul-8 open-fill trades. Never compute combined expectancy across both regimes.
 - **Shadow vs. live:** Shadow pnlR and live pnlR are never averaged together. Shadow data calibrates the filter; live data measures the edge.
 - **Shadow-short cohort:** `shadowShort` pnlR is never averaged with shadow-long pnlR or live pnlR. It is its own cohort, tracked separately to evaluate H10. A positive shadow-short average does not imply anything about the shadow-long or live expectancy.
+- **Polling-gap bias (shadow shorts):** The 45-second loop records -1R when price is first observed at or past the stop, but a short whose stop is breached *between* polls lost more than -1R in reality (upside squeezes are sharper and more violent than downside bleeds, so this gap is asymmetric — shorts are affected more than longs). The shadow-short dataset is therefore slightly optimistic about losses. At the N=40 H10 evaluation, treat the stop-hit rate and average loss as lower bounds, not point estimates.
 - **N counting:** N for kill/scale criteria counts live ORB-filled trades only. Shadow fades are not live trades.
 
 ---
