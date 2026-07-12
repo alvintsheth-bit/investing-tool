@@ -383,7 +383,7 @@ async function logOrbRecovery() {
     entry.closePrice       = price ?? null;
     entry.recoveredByClose = price != null && entry.orHigh != null ? price > entry.orHigh : null;
     console.log(`  [${entry.ticker}] close $${price?.toFixed(2) ?? 'n/a'} | OR high $${entry.orHigh?.toFixed(2) ?? 'n/a'} | recovered: ${entry.recoveredByClose}`);
-    // Force-close any shadow position still open at EOD
+    // Force-close any shadow long still open at EOD
     const s = entry.shadow;
     if (s && s.result == null && price != null) {
       const riskAmount = s.entryPrice - s.stopPrice;
@@ -391,7 +391,17 @@ async function logOrbRecovery() {
       s.exitPrice = price;
       s.pnlR      = riskAmount > 0 ? +((price - s.entryPrice) / riskAmount).toFixed(2) : 0;
       s.exitAt    = new Date().toISOString();
-      console.log(`  [${entry.ticker}] Shadow force-closed @ $${price.toFixed(2)} | pnlR: ${s.pnlR >= 0 ? '+' : ''}${s.pnlR}R`);
+      console.log(`  [${entry.ticker}] Shadow-long force-closed @ $${price.toFixed(2)} | pnlR: ${s.pnlR >= 0 ? '+' : ''}${s.pnlR}R`);
+    }
+    // Force-close any shadow short still open at EOD
+    const ss = entry.shadowShort;
+    if (ss && ss.result == null && price != null) {
+      const riskAmount = ss.stopPrice - ss.entryPrice; // stop is above entry for a short
+      ss.result    = 'force-closed';
+      ss.exitPrice = price;
+      ss.pnlR      = riskAmount > 0 ? +((ss.entryPrice - price) / riskAmount).toFixed(2) : 0;
+      ss.exitAt    = new Date().toISOString();
+      console.log(`  [${entry.ticker}] Shadow-short force-closed @ $${price.toFixed(2)} | pnlR: ${ss.pnlR >= 0 ? '+' : ''}${ss.pnlR}R`);
     }
     await sleep(300);
   }
@@ -456,14 +466,24 @@ async function submitOrbEntry(candidate, openPositions) {
     // isShadow ensures this never mixes with live expectancy calculations.
     const shadowAtrPct = candidate.atr14 ? parseFloat(candidate.atr14) / candidate.decisionPrice : 0.025;
     entry.shadow = {
-      isShadow: true, entryMechanism: 'orb',
+      isShadow: true, entryMechanism: 'orb', side: 'long',
       entryPrice:  price,
       stopPrice:   +(price * (1 - shadowAtrPct)).toFixed(2),
       targetPrice: +(price * (1 + shadowAtrPct * 1.5)).toFixed(2),
       atrPct: shadowAtrPct,
       result: null, exitPrice: null, pnlR: null, exitAt: null,
     };
-    console.log(`  [${ticker}] ORB FADE — sitting out | shadow @ $${price.toFixed(2)} stop $${entry.shadow.stopPrice} target $${entry.shadow.targetPrice}`);
+    // Shadow short: mirror position — profits if faded gap continues to fall (H10 dataset).
+    // stop is ABOVE entry (rising price stops the short); target is BELOW entry.
+    entry.shadowShort = {
+      isShadow: true, entryMechanism: 'orb', side: 'short',
+      entryPrice:  price,
+      stopPrice:   +(price * (1 + shadowAtrPct)).toFixed(2),
+      targetPrice: +(price * (1 - shadowAtrPct * 1.5)).toFixed(2),
+      atrPct: shadowAtrPct,
+      result: null, exitPrice: null, pnlR: null, exitAt: null,
+    };
+    console.log(`  [${ticker}] ORB FADE — sitting out | shadow-long @ $${price.toFixed(2)} stop $${entry.shadow.stopPrice} target $${entry.shadow.targetPrice} | shadow-short stop $${entry.shadowShort.stopPrice} target $${entry.shadowShort.targetPrice}`);
     orbLog.entries.push(entry); saveOrbLog();
     return false;
   }
@@ -810,25 +830,50 @@ async function main() {
     // ── Shadow positions: paper-track ORB fades intraday ──────────────────────
     // Never mixes with live expectancy — isShadow flag separates all analysis.
     if (openingRangeComputed) {
-      const fadedEntries = orbLog.entries.filter(e => e.decision === 'fade' && e.shadow?.result == null);
-      for (const shadow of fadedEntries) {
-        const s = shadow.shadow;
-        if (!s?.entryPrice) continue;
-        const price = await getCurrentPrice(shadow.ticker);
-        if (price == null) continue;
-        const riskAmount = s.entryPrice - s.stopPrice;
-        if (price <= s.stopPrice) {
-          s.result = 'stop-hit'; s.exitPrice = price; s.pnlR = -1; s.exitAt = new Date().toISOString();
-          console.log(`  [${shadow.ticker}] 📉 Shadow stop @ $${price.toFixed(2)} | -1R (entry $${s.entryPrice})`);
-          saveOrbLog();
-        } else if (price >= s.targetPrice) {
-          s.result = 'target-hit'; s.exitPrice = price; s.pnlR = 1.5; s.exitAt = new Date().toISOString();
-          console.log(`  [${shadow.ticker}] 📈 Shadow target @ $${price.toFixed(2)} | +1.5R (entry $${s.entryPrice})`);
-          saveOrbLog();
-        } else {
-          const unrealizedR = riskAmount > 0 ? +((price - s.entryPrice) / riskAmount).toFixed(2) : 0;
-          console.log(`  [${shadow.ticker}] Shadow $${price.toFixed(2)} | stop=$${s.stopPrice} target=$${s.targetPrice} | ${unrealizedR >= 0 ? '+' : ''}${unrealizedR}R (paper)`);
+      const fadedEntries = orbLog.entries.filter(e => e.decision === 'fade');
+      for (const entry of fadedEntries) {
+        // One price fetch per ticker; shared by long and short checks below.
+        const needsUpdate = (entry.shadow?.result == null) || (entry.shadowShort?.result == null);
+        if (!needsUpdate) continue;
+        const price = await getCurrentPrice(entry.ticker);
+        if (price == null) { await sleep(300); continue; }
+
+        // Shadow long
+        const s = entry.shadow;
+        if (s?.entryPrice && s.result == null) {
+          const riskAmount = s.entryPrice - s.stopPrice;
+          if (price <= s.stopPrice) {
+            s.result = 'stop-hit'; s.exitPrice = price; s.pnlR = -1; s.exitAt = new Date().toISOString();
+            console.log(`  [${entry.ticker}] 📉 Shadow-long stop @ $${price.toFixed(2)} | -1R`);
+            saveOrbLog();
+          } else if (price >= s.targetPrice) {
+            s.result = 'target-hit'; s.exitPrice = price; s.pnlR = 1.5; s.exitAt = new Date().toISOString();
+            console.log(`  [${entry.ticker}] 📈 Shadow-long target @ $${price.toFixed(2)} | +1.5R`);
+            saveOrbLog();
+          } else {
+            const unrealizedR = riskAmount > 0 ? +((price - s.entryPrice) / riskAmount).toFixed(2) : 0;
+            console.log(`  [${entry.ticker}] Shadow-long $${price.toFixed(2)} | stop=$${s.stopPrice} target=$${s.targetPrice} | ${unrealizedR >= 0 ? '+' : ''}${unrealizedR}R`);
+          }
         }
+
+        // Shadow short (H10 dataset — instrumentation only, never gates anything)
+        const ss = entry.shadowShort;
+        if (ss?.entryPrice && ss.result == null) {
+          const riskAmount = ss.stopPrice - ss.entryPrice; // stop is above entry
+          if (price >= ss.stopPrice) {
+            ss.result = 'stop-hit'; ss.exitPrice = price; ss.pnlR = -1; ss.exitAt = new Date().toISOString();
+            console.log(`  [${entry.ticker}] 📉 Shadow-short stop @ $${price.toFixed(2)} | -1R`);
+            saveOrbLog();
+          } else if (price <= ss.targetPrice) {
+            ss.result = 'target-hit'; ss.exitPrice = price; ss.pnlR = 1.5; ss.exitAt = new Date().toISOString();
+            console.log(`  [${entry.ticker}] 📈 Shadow-short target @ $${price.toFixed(2)} | +1.5R`);
+            saveOrbLog();
+          } else {
+            const unrealizedR = riskAmount > 0 ? +((ss.entryPrice - price) / riskAmount).toFixed(2) : 0;
+            console.log(`  [${entry.ticker}] Shadow-short $${price.toFixed(2)} | stop=$${ss.stopPrice} target=$${ss.targetPrice} | ${unrealizedR >= 0 ? '+' : ''}${unrealizedR}R`);
+          }
+        }
+
         await sleep(300);
       }
     }
