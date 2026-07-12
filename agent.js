@@ -2266,6 +2266,38 @@ async function runEOD() {
     } catch (e) { console.warn(`  ⚠️  Could not update rejected candidates: ${e.message}`); }
   }
 
+  // Backlog #36 one-shot probe: does get_equity_historicals extended bounds
+  // return pre-market bars at EOD time? Self-answering — result logged and done.
+  // Probe runs once; skips if already answered in a prior orb-log entry.
+  const orbLogPath = join(OUTPUT_DIR, `orb-log-${today}.json`);
+  const alreadyProbed = existsSync(orbLogPath) &&
+    JSON.parse(readFileSync(orbLogPath, 'utf-8')).rvol36ProbeResult != null;
+  if (!alreadyProbed) {
+    try {
+      const probeTickerEntry = existsSync(orbLogPath)
+        ? JSON.parse(readFileSync(orbLogPath, 'utf-8')).entries?.[0]
+        : null;
+      const probeTicker = probeTickerEntry?.ticker || 'SPY';
+      console.log(`  [#36 probe] Fetching extended historicals for ${probeTicker}...`);
+      const hist = await rhMCP('get_equity_historicals', {
+        symbols: probeTicker, interval: '5minute', span: '1day', bounds: 'extended',
+      });
+      const bars = hist?.results?.[0]?.historicals || hist?.historicals || [];
+      // Pre-market bars have begins_at before 13:30 UTC (= 9:30am ET = 6:30am PT)
+      const preMarketBars = bars.filter(b => b.begins_at && new Date(b.begins_at).getUTCHours() < 13);
+      const result = {
+        ticker: probeTicker, totalBars: bars.length, preMarketBars: preMarketBars.length,
+        firstBarAt: bars[0]?.begins_at ?? null, verdict: preMarketBars.length > 0 ? 'BARS_AVAILABLE' : 'NO_PREMARKET_BARS',
+      };
+      console.log(`  [#36 probe] ${result.verdict} — ${result.preMarketBars}/${result.totalBars} pre-market bars for ${probeTicker}`);
+      if (existsSync(orbLogPath)) {
+        const ol = JSON.parse(readFileSync(orbLogPath, 'utf-8'));
+        ol.rvol36ProbeResult = result;
+        atomicWrite(orbLogPath, ol);
+      }
+    } catch (e) { console.warn(`  [#36 probe] Error: ${e.message}`); }
+  }
+
   const resolvedFades = countResolvedFades();
   console.log(`  [EOD] Resolved fades to date: ${resolvedFades} (C1 threshold: 20)`);
   const c1Alert = resolvedFades >= 20
