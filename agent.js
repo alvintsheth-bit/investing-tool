@@ -896,14 +896,19 @@ async function getEarningsCalendar() {
     const data = await fmp(`earnings-calendar?from=${today}&to=${tomorrow}`);
     if (Array.isArray(data) && data.length > 0) {
       const todayEarnings = data.filter(e => e.date === today);
+      // BMO = already reported this morning; gap reflects confirmed result, no event risk tonight. TRADEABLE.
+      // AMC = reporting tonight; result unknown. HARD EXCLUDE.
+      const bmoToday = todayEarnings.filter(e => e.time === 'bmo');
+      const amcToday = todayEarnings.filter(e => e.time !== 'bmo');
       if (todayEarnings.length > 0) {
         return {
           source: 'FMP',
-          earningsToday: todayEarnings.map(e => ({ ticker: e.symbol, time: e.time, eps: e.epsEstimated, revenue: e.revenueEstimated })),
-          note: 'HARD EXCLUDE any ticker with earnings today before close — do not trade regardless of setup score.',
+          bmoToday: bmoToday.map(e => ({ ticker: e.symbol, eps: e.epsEstimated, revenue: e.revenueEstimated })),
+          amcToday: amcToday.map(e => ({ ticker: e.symbol, time: e.time, eps: e.epsEstimated, revenue: e.revenueEstimated })),
+          note: 'HARD EXCLUDE amcToday tickers (reporting tonight — unknown result). BMO tickers are TRADEABLE — results already known, treat as strongest catalyst class (earnings_beat or earnings_miss).',
         };
       }
-      return { source: 'FMP', earningsToday: [], note: 'No earnings today per FMP — proceed normally.' };
+      return { source: 'FMP', bmoToday: [], amcToday: [], note: 'No earnings today per FMP — proceed normally.' };
     }
   } catch {}
   // Fallback to web search if FMP fails
@@ -1014,7 +1019,7 @@ const tools = [
   },
   {
     name: 'get_earnings_calendar',
-    description: 'Get today\'s earnings announcements. HARD RULE: do not buy any stock reporting earnings today before market close.',
+    description: 'Get today\'s earnings. Returns bmoToday (reported this morning — TRADEABLE, confirmed result) and amcToday (reporting tonight — HARD EXCLUDE, unknown result). Never trade amcToday tickers. BMO reporters are the richest catalyst class.',
     input_schema: { type: 'object', properties: {}, required: [] },
   },
   {
@@ -1724,8 +1729,10 @@ Phase 1 — Market context (call ONCE each):
   get_fear_greed_vix → sets today's risk appetite
   get_sector_rotation → which sectors are gapping pre-market
 
-Phase 2 — Earnings exclusions:
-  get_earnings_calendar → build hard exclude list (earnings today = never trade, skip immediately)
+Phase 2 — Earnings classification:
+  get_earnings_calendar → returns two lists:
+    amcToday  = reporting TONIGHT — HARD EXCLUDE, unknown result, never trade
+    bmoToday  = reported THIS MORNING — TRADEABLE, confirmed result, treat as earnings_beat or earnings_miss catalyst
 
 Phase 3 — Research each screener candidate (work through the ranked list above):
   get_premarket_data [ticker] → ATR-14, RSI, stop/target levels (gap% already known from screener)

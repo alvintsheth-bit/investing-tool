@@ -113,12 +113,14 @@ async function fmpEarnings() {
     if (!r.ok) return [];
     const data = await r.json();
     if (!Array.isArray(data)) return [];
-    // After-market-close (AMC) yesterday only: reported after yesterday's close, pre-market
-    // gap reflects reaction. Phase 2 in the scan hard-excludes earnings-day names from trading
-    // — these enter the screener for next-day watching, not same-day execution.
-    // Before-market-open (BMO) today excluded: Phase 2 blocks them anyway; wastes screener slots.
+    // Two tradeable earnings classes:
+    // (1) AMC yesterday: reported after yesterday's close; gap reflects known result.
+    // (2) BMO today: reported before today's open; results known, no event risk tonight.
+    // Both are structurally identical — confirmed catalyst, no upcoming unknown.
+    // Hard-excluded by agent: AMC today (reporting tonight, result unknown).
     return data
-      .filter(e => e.time === 'amc' && e.date === yesterday)
+      .filter(e => (e.time === 'amc' && e.date === yesterday) ||
+                   (e.time === 'bmo' && e.date === today))
       .map(e => e.symbol)
       .filter(Boolean);
   } catch { return []; }
