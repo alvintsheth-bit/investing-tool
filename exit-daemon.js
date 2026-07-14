@@ -604,6 +604,27 @@ async function closePosition(pos, currentPrice, exitReason) {
     return false;
   }
 
+  // Residual sweep: fractional sell orders sometimes partially execute (RH rounding).
+  // Verify broker position is actually zero; if not, sell the remainder.
+  if (!DRY_RUN) {
+    await sleep(2000);
+    try {
+      const acct = await getRHAccountNumber();
+      const posResult = await rhMCP('get_equity_positions', { account_number: acct });
+      const brokerPos = (posResult?.data?.positions || []).find(p => p.symbol === pos.ticker);
+      const residual = brokerPos ? parseFloat(brokerPos.quantity || '0') : 0;
+      if (residual > 0.0001) {
+        console.warn(`  ⚠️  [${pos.ticker}] Residual ${residual} shares after sell — sweeping remainder`);
+        await rhMCP('place_equity_order', {
+          account_number: acct, symbol: pos.ticker, side: 'sell', type: 'market',
+          quantity: String(residual), time_in_force: 'gfd',
+        });
+      }
+    } catch (e) {
+      console.warn(`  ⚠️  [${pos.ticker}] Residual check failed: ${e.message} — may need manual cleanup`);
+    }
+  }
+
   // Item 35: CLOSED
   addStateHistory(pos, TRADE_STATES.CLOSED, { exitPrice: currentPrice, pnl: +pnl.toFixed(2) });
 
