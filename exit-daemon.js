@@ -96,7 +96,12 @@ function loadOpenPositions() {
   if (!existsSync(OPEN_POSITIONS_FILE)) return { date: today, positions: [] };
   try {
     const data = JSON.parse(readFileSync(OPEN_POSITIONS_FILE, 'utf-8'));
-    if (data.date !== today) return { date: today, positions: [] };
+    if (data.date !== today && data.positions?.length) {
+      // Carry-over: positions left open from a previous session — tag and migrate
+      const positions = data.positions.map(p => ({ ...p, carryOver: true, carryDate: data.date }));
+      atomicWrite(OPEN_POSITIONS_FILE, { date: today, positions });
+      return { date: today, positions };
+    }
     return data;
   } catch { return { date: today, positions: [] }; }
 }
@@ -650,6 +655,7 @@ async function main() {
   let orb5MinLogged      = false;
   let orb10MinLogged     = false;
   let orbRecoveryLogged  = false;
+  let carryOversResolved = false;
   let consecutiveQuoteFailures = {};  // ticker → count
 
   while (true) {
@@ -674,6 +680,22 @@ async function main() {
     if (!orbRecoveryLogged && ptNow >= forceCloseTime && orbLog.entries.length) {
       orbRecoveryLogged = true;
       await logOrbRecovery();
+    }
+
+    // ── Carry-over close: positions that weren't closed in the previous session ─
+    // Close at market open, not at 12:45pm — don't hold an orphan all day.
+    if (!carryOversResolved && ptNow >= PT.MARKET_OPEN) {
+      carryOversResolved = true;
+      const allOpen = loadOpenPositions();
+      const carryOvers = allOpen.positions.filter(p => p.carryOver);
+      if (carryOvers.length) {
+        console.log(`[exit-daemon] ⚠️  ${carryOvers.length} carry-over position(s) from ${carryOvers[0].carryDate || 'prev day'} — closing at market open`);
+        for (const pos of carryOvers) {
+          const price = await getCurrentPrice(pos.ticker) || pos.entryPrice;
+          await closePosition(pos, price, `carry-over-open (from ${pos.carryDate || 'prev session'})`);
+          await sleep(500);
+        }
+      }
     }
 
     const openData    = loadOpenPositions();
@@ -771,6 +793,10 @@ async function main() {
     // ── Fast loop: stop/target check ─────────────────────────────────────────
     const updatedPositions = [...openData.positions];
     for (const pos of updatedPositions) {
+      if (pos.carryOver) {
+        console.log(`  [${pos.ticker}] carry-over — will close at market open`);
+        continue;
+      }
       // Item 35: stop/target only valid once PROTECTED. If no state field (legacy records), treat as PROTECTED.
       if (pos.state === TRADE_STATES.QUEUED) {
         console.log(`  [${pos.ticker}] QUEUED — awaiting ORB decision at 6:45am`);

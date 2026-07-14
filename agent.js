@@ -114,8 +114,10 @@ function loadOpenPositions() {
   if (!existsSync(OPEN_POSITIONS_FILE)) return { date: today, positions: [] };
   try {
     const data = JSON.parse(readFileSync(OPEN_POSITIONS_FILE, 'utf-8'));
-    // Reset if stale (from a previous day)
-    if (data.date !== today) return { date: today, positions: [] };
+    if (data.date !== today && data.positions?.length) {
+      // Carry-over: preserve positions so reconciliation sees them (daemon will close at market open)
+      return { date: data.date, positions: data.positions.map(p => ({ ...p, carryOver: true, carryDate: data.date })) };
+    }
     return data;
   } catch { return { date: today, positions: [] }; }
 }
@@ -395,16 +397,22 @@ async function reconcilePositions(acct) {
     const localTickers  = new Set(local.map(p => p.ticker));
     const inLocalOnly   = local.filter(p => p.state !== 'ORDER_PENDING' && !brokerTickers.has(p.ticker));
     const inBrokerOnly  = brokerPos.filter(p => !localTickers.has(p.symbol));
-    if (inLocalOnly.length || inBrokerOnly.length) {
+    // Local-only = we think we own something broker doesn't → hard abort (dangerous)
+    // Broker-only = carry-over the daemon will close at market open → warn only, allow scan
+    if (inLocalOnly.length) {
       const msg = [
-        'POSITION MISMATCH',
+        'POSITION MISMATCH (local-only)',
         `Local: [${[...localTickers].join(', ') || 'none'}]`,
         `Broker: [${[...brokerTickers].join(', ') || 'none'}]`,
-        inLocalOnly.length  ? `Local-only: ${inLocalOnly.map(p => p.ticker).join(', ')}` : '',
-        inBrokerOnly.length ? `Broker-only: ${inBrokerOnly.map(p => p.symbol).join(', ')}` : '',
-      ].filter(Boolean).join(' | ');
-      console.warn(`  ⚠️  ${msg}`);
+        `Local-only: ${inLocalOnly.map(p => p.ticker).join(', ')}`,
+      ].join(' | ');
+      console.warn(`  🚨 ${msg}`);
       return { ok: false, mismatch: msg };
+    }
+    if (inBrokerOnly.length) {
+      const warn = `Broker has untracked position(s): ${inBrokerOnly.map(p => p.symbol).join(', ')} — exit-daemon will close at market open`;
+      console.warn(`  ⚠️  ${warn}`);
+      return { ok: true, brokerOnlyWarning: warn };
     }
     console.log(`  ✅ Reconciliation OK — ${local.length} position(s) match broker`);
     return { ok: true };
@@ -1617,6 +1625,9 @@ async function preflightChecks() {
       await sendAlertEmail('Position Mismatch Detected', `Scan aborted: ${reconcile.mismatch}`);
       console.error('  🚨 Position mismatch — aborting scan to prevent stale-state trades');
       process.exit(1);
+    }
+    if (reconcile.brokerOnlyWarning) {
+      await sendAlertEmail('Carry-Over Position Detected', `${reconcile.brokerOnlyWarning}\n\nScan proceeding. Exit-daemon will close at market open.`);
     }
   }
 
