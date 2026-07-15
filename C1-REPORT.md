@@ -179,7 +179,7 @@ No bucket has cleared its bar. Carry to C2.
 | Avg pnlR | +0.37R |
 | Win rate | 12/17 = 70.6% |
 | Full stop hits (−1R) | MGM, PYPL (2/17) |
-| Capped targets (+1.5R) | SOXL (Jul 14), SNDK, TER (3/17) |
+| Capped targets (+1.5R) | SOXL (Jul 14), SNDK, TER, SOXL (Jul 15) (4/17) |
 
 Individual: MGM −1R, OXY −0.65R, APA +0.28R, TTD +0.82R, SOXL(Jul14) +1.5R, MRVL +0.69R, NXPI +0.35R, MPWR −0.28R, SNDK +1.5R, TER +1.5R, KLAC −0.08R, AMAT +0.18R, LRCX +0.20R, BLK +0.16R, BABA +0.64R, SOXL(Jul15) +1.5R, PYPL −1R.
 
