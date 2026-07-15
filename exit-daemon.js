@@ -355,9 +355,12 @@ function loadQueuedTrades() {
 let orbLog = { date: today, queued: [], marks: {}, entries: [] };
 function saveOrbLog() { atomicWrite(ORB_LOG_FILE, orbLog); }
 
-// Log price for all queued candidates at a given minute mark (5, 10, 15)
+// Log price for all queued candidates at a given minute mark (0=open, 5, 10)
 async function logOrbPrices(queuedTrades, mark) {
-  console.log(`[exit-daemon] ${6 + Math.floor((30 + mark) / 60)}:${String((30 + mark) % 60).padStart(2,'0')}am: logging ${mark}-min ORB prices for ${queuedTrades.length} queued candidate(s)...`);
+  const label = mark === 0 ? 'open' : `${mark}-min`;
+  const hour  = 6 + Math.floor((30 + mark) / 60);
+  const min   = String((30 + mark) % 60).padStart(2, '0');
+  console.log(`[exit-daemon] ${hour}:${min}am: logging ${label} ORB prices for ${queuedTrades.length} queued candidate(s)...`);
   if (!orbLog.queued.length) {
     orbLog.queued = queuedTrades.map(t => ({
       ticker:       t.ticker,
@@ -372,7 +375,7 @@ async function logOrbPrices(queuedTrades, mark) {
   for (const candidate of queuedTrades) {
     const price = await getCurrentPrice(candidate.ticker);
     orbLog.marks[mark][candidate.ticker] = { price, gapFromDecision: price ? +((price - candidate.decisionPrice) / candidate.decisionPrice * 100).toFixed(2) : null };
-    console.log(`  [${candidate.ticker}] ${mark}-min price: $${price?.toFixed(2) ?? 'unavailable'} (decision: $${candidate.decisionPrice})`);
+    console.log(`  [${candidate.ticker}] ${label} price: $${price?.toFixed(2) ?? 'unavailable'} (decision: $${candidate.decisionPrice})`);
     await sleep(300);
   }
   saveOrbLog();
@@ -673,6 +676,7 @@ async function main() {
 
   let lastHaikuCheckMs = 0;
   let openingRangeComputed = false;
+  let orbOpenLogged      = false;
   let orb5MinLogged      = false;
   let orb10MinLogged     = false;
   let orbRecoveryLogged  = false;
@@ -725,6 +729,12 @@ async function main() {
       if (ptNow >= PT.MARKET_CLOSE - 5) break; // no positions + near close → done
       await sleep(60_000);
       continue;
+    }
+
+    // ── 6:30am: log market-open price for queued candidates ──────────────────
+    if (!orbOpenLogged && ptNow >= PT.MARKET_OPEN && queuedTrades.length) {
+      orbOpenLogged = true;
+      await logOrbPrices(queuedTrades, 0);
     }
 
     // ── 6:35am: log first 5-min price mark for queued candidates ────────────
