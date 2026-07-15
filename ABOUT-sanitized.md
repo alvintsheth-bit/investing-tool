@@ -1578,6 +1578,14 @@ Design decisions that were changed, and the reasoning behind each removal. Kept 
 
 **ORB confirmation-bar bug (July 8 2026):** Original OR high used all 3 bars including bar3 (6:40-6:45am). At 6:45am, bar3's close was tested against a threshold bar3's own spike set — structurally unpassable. Fixed: OR high now uses bars 1+2 only. Correctness fix, not tuning.
 
+**6:30am open price logging (July 15 2026):** Added `marks[0]` — snapshot at actual market open (6:30am PT) per queued candidate. Enables apples-to-apples trend reading across 6:30/6:35/6:40/6:45 bars rather than comparing 6:35 against thin 5:40am pre-market price.
+
+**Carry-over position bug (fixed July 15 2026):** If force-close fails, `trades-open.json` retains the stale-dated position. Previously, `loadOpenPositions()` silently dropped stale records on the next session, causing reconciliation to abort the scan (broker held the position; local state was empty). Fix: date-mismatch detection tags positions `carryOver: true` and closes them at 6:30am market open. Reconciliation split: local-only = abort (dangerous); broker-only = warn + proceed (daemon handles it).
+
+**Fractional sell residual bug (fixed July 15 2026):** Robinhood's fractional engine sometimes partially fills a sell order (PSX: 0.6309 of 0.6480 shares sold, leaving 0.0171 stranded). Fix: after every executeSell(), check actual broker position and sweep any residual > 0.0001 shares with a second market sell.
+
+**C1 checkpoint — executed July 15 2026:** N=29 resolved fades. Zero entry-logic changes — no item cleared its pre-stated bar. H3 failed (+7.6 pp vs ≥10 pp bar); H7 failed (no improvement over snapshot); F2 confirmed 10-min window; H10 first read positive (+0.37R avg, N=17) but cannot act until N=40 + 2 regimes + earnings. Full report: `C1-REPORT.md`. Next: C2 at N=20 live ORB trades.
+
 **Decision-price root cause (July 8 2026):** Decision price is set at 5:40am on thin pre-market volume, 50 minutes before real flow. All ORB filtering is downstream compensation for this stale anchor. Open design question: should the thesis re-anchor to the opening auction price?
 
 **RH probe (July 8 2026):** DAILY_GAINERS scanner at 5:40am returned 3 micro-cap tokens, zero S&P 500 names. Pre-market scanner is effectively empty. Yahoo 580-ticker loop stays.
@@ -1588,5 +1596,5 @@ Design decisions that were changed, and the reasoning behind each removal. Kept 
 
 ---
 
-*Last updated: July 8 2026*
+*Last updated: July 15 2026*
 *Built using Claude Code*

@@ -1477,8 +1477,10 @@ Items are stacked: P1 = do now, P2 = after first 20 live trades, P3 = after firs
 | 30 | **Signal decay / feature stability monitoring** | Track each signal's hit rate over rolling 30-trade windows. If `news_catalyst` was predictive in months 1-2 and trends toward random in month 3, the edge may be getting crowded. Plot per-signal P&L contribution over time. Trigger: 100+ trades for the rolling window to be meaningful. |
 | 32 | **Gap-fade entry filter — ORB entry at 6:45am** | ✅ Implemented + refined July 2026. Agent queues qualifying candidates (≥0.45 score, no MAX_POSITIONS cap at queue time). Exit-daemon: (1) logs 5-min price at 6:35am, (2) logs 10-min price at 6:40am, (3) at 6:45am checks price vs 10-min OR high (bars 1+2 only — bar3 excluded, it is the confirmation bar). Gap held → buy; gap faded → skip. (4) At 12:45pm, every entry gets `recoveredByClose`, `catalystType`, `catalystTag`, `effectiveGapPct`, `gapRetained` (effective/original gap ratio). OR variants (5-min, 10-min, 15-min highs + bar closes) logged on every candidate for empirical window selection at N=20. Live decision uses 10-min OR (only valid choice — 15-min includes bar3's own spike in its threshold). |
 | 33 | **Daily candidate scorecard** | ✅ Implemented July 2026. `log_daily_candidates` tool writes `candidates-YYYY-MM-DD.json` at end of each session with rank, screenerRank, gapPct, compositeScore, signal breakdown, and action for all evaluated candidates. Enables signal correlation analysis at N=60. |
-| 34 | **`entryMechanism` + `isShadow` fields on all trades** | ✅ Done July 2026. Every posRecord now carries `entryMechanism: 'orb'` and `isShadow: false`. Pre-July-8 trades have neither field — the absence distinguishes the regime. Required so N=60+ analysis never silently mixes open-fill entries (pre-July-8) with ORB entries (post-July-8), which are structurally different systems. |
+| 34 | **`entryMechanism` field in trades-log (partial — BUG)** | posRecord is created with `entryMechanism: 'orb'` in `submitOrbEntry()` (exit-daemon), but the field is NOT persisted to `trades-log.json` by `recordClosedTrade()`. All post-Jul-8 live ORB trades show `entryMechanism: None` in trades-log. PSX (Jul 13) is the only live ORB trade and is identified manually. **Fix required before C2:** ensure `recordClosedTrade()` includes `entryMechanism` from the posRecord. Required for F1 kill-check evaluation at C2. |
 | 35 | **Shadow intraday tracking for ORB fades** | ✅ Done July 2026. When ORB check (6:45am) determines a candidate has faded, exit-daemon creates a `shadow` sub-record on the ORB log entry: paper entry at orbCheckPrice, ATR-based stop/target, `isShadow: true`. Fast loop polls shadow positions every 45s alongside live ones. Results: `stop-hit` / `target-hit` / `force-closed` with pnlR, all in the orb-log JSON. Answers "if ORB hadn't filtered it, what would have happened?" Triples effective sample rate for filter calibration at N=20. Shadow results never touch live P&L or expectancy calculations. |
+| 37 | **Log post-6:45am intraday 5-min bars for H7 full evaluation** | H7 (trigger vs snapshot ORB) cannot be fully evaluated without intraday prices at 6:50, 6:55, 7:00 … 7:30am PT per queued candidate. Currently only 6:35/6:40/6:45 are logged. Add a `postORB` marks block to the orb-log entry storing prices at 5-min intervals from 6:50 to 7:30am, collected by exit-daemon during its normal poll cycle. Required for H7 at C2. |
+| 38 | **Spot-check catalystTag quality (C1 action item)** | Before C2, audit 5 stale-news-tagged and 5 structural-tagged candidates against actual news source. Per PRE-REG weekly protocol. If misclassification rate > 10%, update LLM prompt rubric with examples before the C2 dataset accumulates. |
 | 36 | **Post-hoc pre-market RVOL as logged field on orb-log candidates** | Pre-market RVOL is permanently unavailable at 5:40am screener time (Yahoo returns zero pre-market volume; RH scanner probe closed Jul 12 — no pre-market data). However, `get_equity_historicals` with `bounds='extended'` may return pre-market 5-min bars when called at EOD time (1:30pm PT), after the session has closed. If it does: sum pre-market bar volumes (4am–9:30am ET), divide by 20-day avg volume (from FMP profile), write `premarketRvol` on each orb-log entry. This gives RVOL as a retroactive analysis field for C3: "did high-RVOL candidates outperform?" — without ever gating on it live. **Required first step:** Quick probe at EOD to verify `get_equity_historicals` extended bounds actually returns pre-market bars at EOD time (the original Jul 2 probe returned 0 bars; unclear if that was a timing or parameter issue). If bars are returned, implement in `runEOD()` in agent.js. If not, RVOL analysis at C3 is simply absent and the H1 RVOL note in PRE-REG.md stands. |
 | 31 | **Signal ensemble — second uncorrelated edge** | Momentum (gap-up) and mean-reversion profit in opposite regimes. Once the momentum edge is validated, adding a mean-reversion signal (e.g. large gap-down on a stock with strong fundamentals) creates an edge that fires in different conditions. Requires the first edge proven first — stacking two unproven edges just creates noise. Trigger: 100+ trades, momentum edge validated via holdout. |
 
@@ -1603,6 +1605,8 @@ Design decisions that were changed, and the reasoning behind each removal. Kept 
 
 **ORB confirmation-bar bug (July 8 2026):** Original `getOpeningRange()` used all 3 bars (6:30, 6:35, 6:40), making `orHigh = max(bar1, bar2, bar3)`. At 6:45am we compare bar3's close against a threshold bar3's own spike set — structurally unpassable. Fixed: `orHigh` now uses bars 1+2 only. Bar3 is the confirmation bar and cannot be part of the range it's tested against. This is a correctness fix, not a window-tuning decision.
 
+**6:30am open price logging (July 15 2026):** Added `marks[0]` — a price snapshot logged at 6:30am PT (market open) for every queued candidate. Enables apples-to-apples trend comparison between actual open (6:30) and the 6:35 and 6:40 ORB bars, rather than comparing 6:35 against a pre-market price from thin 5:40am volume. `logOrbPrices()` was updated to accept `mark=0` (label: `open`) alongside the existing `mark=1,2,3` (6:35, 6:40, 6:45). A new `orbOpenLogged` flag prevents double-logging.
+
 **Implementation bug v1 (July 2026):** `checkMaxConcurrent()` only read `trades-open.json`. Gate was effectively 0 at 6am with ORB — fixed to also count `queued-trades.json`.
 
 **Implementation bug v2 (July 8 2026):** Counting queued trades toward MAX_POSITIONS blocked backup candidates when all queued trades faded. Observed: AVAV/MTZ/LYB/DOW all queued → all faded → BABA (0.47, +8.3%) blocked at queue time → 0 trades. Fixed: agent queues all ≥0.45 scorers, exit-daemon enforces MAX_POSITIONS at actual entry.
@@ -1613,5 +1617,54 @@ Design decisions that were changed, and the reasoning behind each removal. Kept 
 
 ---
 
-*Last updated: July 8 2026*
+---
+
+### Carry-over position — stale-dated open position silently dropped (fixed July 15 2026)
+
+**What it was:** If exit-daemon failed to close a position (force-close job missed, network error, etc.), `trades-open.json` would still contain that position with the previous session's date. On the next morning, `loadOpenPositions()` in exit-daemon.js (and agent.js) would detect `data.date !== today` and return an empty positions list — silently discarding the carry-over position rather than flagging it.
+
+**Why it was wrong:** PSX (Jul 13 2026) — force-close completed but only sold 0.6309 of 0.6480 shares due to Robinhood fractional partial fill (see residual bug below). The next morning (Jul 14), exit-daemon dropped the stale record on startup. Simultaneously, agent.js's `reconcilePositions()` saw broker holding PSX but nothing in local state, and **aborted the scan** — a hard error that blocked all candidates from being queued before the 6:45am ORB deadline.
+
+**What was fixed:**
+1. `loadOpenPositions()` in exit-daemon.js: detects `data.date !== today`. If stale-dated positions exist, re-tags each with `carryOver: true` and `carryDate: data.date`, then atomicWrite the updated records so the date matches today. Exit-daemon's main loop closes all `carryOver` positions at market open (6:30am PT), not 12:45pm.
+2. `loadOpenPositions()` in agent.js: same date-mismatch detection but WITHOUT atomicWrite — agent reads carry-overs for reconciliation awareness only; exit-daemon owns the write path.
+3. `reconcilePositions()` in agent.js: split behavior — **local-only positions → abort** (dangerous: we think we're flat but we're not); **broker-only positions → warn + email + proceed** (daemon will handle carry-overs at open, not a safety risk).
+
+---
+
+### Fractional sell residual — partial fill leaves stranded shares (fixed July 15 2026)
+
+**What it was:** Robinhood's fractional-shares engine sometimes partially fills a sell order — executing most of the sell but leaving a tiny residual (e.g. 0.0171 shares of PSX after a sell of 0.6480 was filled as 0.6309). The residual is too small to trigger a new order automatically. exit-daemon reported the sell as complete and closed the record, leaving the residual stranded in the broker account.
+
+**Why it was wrong:** PSX left 0.0171 shares ($0.93) stranded after the Jul 13 force-close. These appeared in broker positions on Jul 14 as an untracked broker-only position, triggering reconciliation concern. Additionally, the residual could compound if multiple positions partially fill on the same session.
+
+**What was fixed:** After every `executeSell()` call (in `closePosition()`), exit-daemon waits 2 seconds, then calls `get_equity_positions` to check the actual remaining broker position for that ticker. If residual > 0.0001 shares, it places a second market sell order sweeping the remainder. Any error in the residual check is caught and logged as a warning (manual cleanup) without blocking the primary close.
+
+---
+
+### C1 checkpoint — executed July 15 2026
+
+**Trigger:** N=20 resolved fade records (actual N=29 at execution).  
+**Result:** Zero entry-logic changes. No item cleared its pre-stated bar.  
+**Full report:** `/Users/alvintsheth/investing-tool/C1-REPORT.md`
+
+Key findings:
+- **H3 (catalyst quality):** structural 16.7% recovery vs stale-news 9.1% = +7.6 pp. FAILS the ≥10 pp bar. Boundary not predictive as drawn; no redraw recommended (too noisy to redraw).
+- **H7 (trigger vs snapshot):** 5-min trigger enters 1 additional fade (APA, −0.28R). Post-6:45am trigger unevaluable without intraday bars. FAILS adoption bar.
+- **F1 (kill check):** shadow-long avg −0.43R, live N=1 (PSX +0.47R). Underpowered — not triggered.
+- **F2 (window selection):** 5-min adds a losing entry; 15-min = no change. Keep 10-min OR window confirmed.
+- **H10 (shadow-short):** +0.37R avg, 70.6% win rate at N=17. Positive first read — CANNOT ACT until N=40 + 2 regimes + earnings.
+- **gapRetained sweep:** <0.7 bucket 11.1% recovery vs >1.0 bucket 9.1% = +2.0 pp. FAILS ≥20 pp bar.
+
+Action items from C1 (non-logic):
+1. Fix `entryMechanism` field in exit-daemon: not currently written to trades-log at ORB fill. Required for F1 at C2.
+2. Log post-6:45am 5-min intraday bars (6:50–7:30am) per queued candidate for H7 full evaluation at C2.
+3. CatalystTag quality audit: spot-check 5 stale-news + 5 structural tags against actual news before C2.
+
+**Next checkpoint:** C2 at N=20 live ORB trades. Slippage distribution, F5 target-coupling, volatility-based sizing review.  
+**Pace clause:** 18 sessions with 1 live entry as of Jul 15. If 20 sessions reached with <10 total live entries, funnel diagnosis is required.
+
+---
+
+*Last updated: July 15 2026*
 *Built by Alvint Sheth using Claude Code*
