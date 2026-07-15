@@ -26,6 +26,7 @@ Nine pre-registered tests, nine nulls. That is not a disappointing checkpoint �
 | With shadowShort resolved | 17 | Jul 13 onward; H10 cohort |
 | Live ORB entries (confirmatory) | 1 | PSX, Jul 13, rMultiple=+0.47R, exitReason=force-close |
 | entryMechanism logging bug | — | `entryMechanism` was not written to trades-log at close; fixed this session. PSX manually identified as the only live ORB trade. |
+| v1 draft script error | — | The first draft of this report contained an internal contradiction: H3 text credited MGM as a stale-news recovery (which would have put the difference at +7.6 pp), while the same draft's H4 table and gapRetained sweep never counted MGM as recovered. The orb-log is unambiguous — MGM catalystTag = structural, and recoveredByClose = false. The script in v1 misread one field; v2 reads all three tables from the same source and they agree. The discrepancy is noted here because two versions of this report exist in git and the numbers differ. |
 
 All prices are daemon-logged canonical values (`orbCheckPrice`, shadow bar closes from `orbVariants`). Yahoo Finance not used.
 
@@ -44,13 +45,15 @@ Tags taken directly from orb-log fields (set by agent at scan time; not modified
 | stale-news | 11 | 1 (MPWR) | 9.1% | −0.63R |
 | **Difference** | — | — | **+2.0 pp** | structural better |
 
-**Verdict: FAILS the 10 pp bar.** Difference is +2.0 pp.
+**Verdict: FAILS the 10 pp bar at +2.0 pp — PROVISIONAL pending blind catalystTag audit.**
 
-The structural/stale-news boundary shows weak predictive power at N=29. Recovery rates are low in both buckets. The boundary may be redrawn at C1 per pre-registration, but no clear alternative emerges: within structural, the best sub-type is M&A at 2/3 (67%) driven by PYPL (+1.5R buyout) and OXY (+0.65R macro-driven), but N=3 offers no reliable signal. Redrawing the boundary around M&A catalysts at N=3 would be data mining; the taxonomy stays as-is.
+The structural/stale-news boundary shows weak predictive power at the numbers above. However, the audit is now decisive: a single reclassification of MGM (structural, non-recovered) or MPWR (stale-news, recovered) moves the difference across the 10 pp bar in either direction. Until the audit is complete, this verdict cannot be treated as final.
 
-One thing the data does confirm cleanly: stale-news shadow-long avg (−0.63R) is worse than structural (−0.31R). The direction of the hypothesis is correct even though the recovery-rate gap is below threshold.
+**Pre-stated no-action clause (locked before audit results exist):** Even if the blind audit flips H3 to pass, no live entry-logic change follows from it. H3 tests whether the structural/stale-news boundary predicts recovery — it informs catalyst weighting at C3 and tag boundary decisions, not the ORB entry gate. A pass would mean the boundary has predictive value; it would not authorize any gating change at this checkpoint. This clause is written before the audit results so it cannot be written around them.
 
-**Tag integrity note:** All 29 catalystTag values were read directly from the orb-logs (set by Claude at scan time, before outcomes were known). The structural/stale-news mapping follows the pre-registered taxonomy: `analyst_upgrade | insider_purchase | sector_sympathy | technical` → stale-news; all others → structural. No post-hoc reclassification was made. Pre-C2 action item: full blind audit of all 29 catalystType assignments against actual news source (auditor must not see `recoveredByClose` outcomes before completing tags).
+The data does confirm one thing regardless of audit outcome: stale-news shadow-long avg (−0.63R) is worse than structural (−0.31R). Direction of the hypothesis is supported even though the recovery-rate gap may or may not clear its bar.
+
+**Tag integrity note:** All 29 catalystTag values are read directly from the orb-logs (set by Claude at scan time, before outcomes were known). The structural/stale-news mapping follows the pre-registered taxonomy: `analyst_upgrade | insider_purchase | sector_sympathy | technical` → stale-news; all others → structural. No post-hoc reclassification was made in this version. Blind audit protocol: auditor verifies all 29 catalystType assignments against actual news source before seeing `recoveredByClose` outcomes, then H3 is recomputed and this section is amended with a changelog entry.
 
 ---
 
@@ -178,7 +181,9 @@ No bucket has cleared its bar. Carry to C2.
 | Full stop hits (−1R) | MGM, PYPL (2/17) |
 | Capped targets (+1.5R) | SOXL (Jul 14), SNDK, TER (3/17) |
 
-Individual: MGM −1R, OXY −0.65R, APA +0.28R, TTD +0.82R, SOXL(Jul14) +1.5R, MRVL +0.69R, NXPI +0.35R, MPWR −0.28R, SNDK +1.5R, TER +1.5R, KLAC −0.08R, AMAT +0.18R, LRCX +0.20R, BLK +0.16R, BABA +0.64R, SOXL(Jul15) −1R, PYPL −1R.
+Individual: MGM −1R, OXY −0.65R, APA +0.28R, TTD +0.82R, SOXL(Jul14) +1.5R, MRVL +0.69R, NXPI +0.35R, MPWR −0.28R, SNDK +1.5R, TER +1.5R, KLAC −0.08R, AMAT +0.18R, LRCX +0.20R, BLK +0.16R, BABA +0.64R, SOXL(Jul15) +1.5R, PYPL −1R.
+
+Sum check: +6.31R / 17 = +0.37R avg ✓ (verified against raw orb-logs). v1 draft had SOXL(Jul15) as −1R — orb-log shows target-hit at +1.50R; the sign error made the list sum to +3.81R and match neither the header nor the data.)
 
 Polling-gap bias: stop-hits in the short cohort are slightly optimistic (see PRE-REG § 8). The +0.37R avg is a ceiling estimate.
 
@@ -209,7 +214,7 @@ Do not use as a filter. Carry data forward; revisit at C2 with earnings-season d
 
 | Item | Bar | Result | Verdict |
 |---|---|---|---|
-| **H3** (catalyst quality) | structural − stale-news ≥ 10 pp | +2.0 pp | **FAILS** |
+| **H3** (catalyst quality) | structural − stale-news ≥ 10 pp | +2.0 pp | **PROVISIONAL — FAILS** pending blind audit; single tag flip is decisive either way; no live change follows regardless of outcome |
 | **H7** (trigger vs snapshot) | ≥ 0.2R/candidate improvement | Adds −0.28R (5-min); post-6:45 unevaluable | **FAILS** |
 | **F1** (ORB kill check) | shadow mean materially > live mean | −0.43R shadow, +0.47R live (N=1) | **Not triggered** |
 | **F2** (window selection) | clear margin over 10-min | 5-min worse; 15-min identical | **Keep 10-min** |
@@ -250,3 +255,6 @@ Counted from July 8, 2026 (ORB regime start, per PRE-REG § 8 amendment 2026-07-
 | 2026-07-15 | C1 executed at N=29. Zero entry-logic changes. Report filed. |
 | 2026-07-15 | entryMechanism bug fixed (exit-daemon.js `recordClosedTrade`). |
 | 2026-07-15 | Pace clause session count pinned to July 8 in PRE-REG.md (class a amendment). |
+| 2026-07-15 | H10 individual list corrected: SOXL(Jul15) was written as −1R in v1; raw orb-log is +1.50R (target-hit). Header stats (+0.37R, 12/17, 2 stops) were correct; list was wrong. Sum-check line added. |
+| 2026-07-15 | H3 verdict marked provisional pending blind catalystTag audit. No-action clause pre-stated: a pass does not authorize any entry-logic change. v1 script error documented in Data Quality Notes. |
+| Pending | H3 blind audit: auditor reads actual news for all 29 candidates before seeing recoveredByClose, recomputes H3, amends this section. |
