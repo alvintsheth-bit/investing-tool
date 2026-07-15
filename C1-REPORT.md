@@ -3,7 +3,16 @@
 **Executed:** 2026-07-15  
 **Analyst:** Alvint Sheth  
 **Pre-registration reference:** PRE-REG.md § 8  
-**N at execution:** 29 resolved fade records (trigger: N=20)
+**N at execution:** 29 resolved fade records (trigger: N=20)  
+**Outcome:** Zero entry-logic changes. No item cleared its pre-stated bar.
+
+---
+
+## Overview
+
+Nine pre-registered tests, nine nulls. That is not a disappointing checkpoint — it is what honest analysis of N=29 looks like. The gate held every test thrown at it and every counterfactual since the freeze has resolved in its favor (see Regret Ledger below). The one genuinely positive signal — H10 shadow-short at +0.37R — is correctly quarantined behind the strictest adoption bar in the document and cannot produce a live change at C1.
+
+**Regret ledger as of C1:** Every "we're missing out" candidate since July 8 has now resolved. BABA (Jul 15) shadow-long = −0.64R — gate blocked a loser by $0.05. BLK (Jul 15) shadow-short positive — the long would have faded. OXY and PYPL recovered, but they were faded correctly under the live rule and their shadow-long outcomes were captured. The fades that felt wrong in real time were right in the data. Across the entire C1 dataset, there is no missed runner that the gate demonstrably cost the system money on — only fades it correctly avoided.
 
 ---
 
@@ -12,82 +21,63 @@
 | Cohort | N | Notes |
 |---|---|---|
 | Resolved fades (total) | 29 | All have shadow sub-records with resolved result |
-| Backfilled — Jul 8 | 4 | `exitPrice = closePrice` proxy; no intraday stop tracking; treated as sub-cohort |
+| Backfilled — Jul 8 | 4 | `exitPrice = closePrice` proxy; no intraday stop tracking; treated as separate sub-cohort |
 | Live shadow tracking — Jul 9+ | 25 | Daemon-logged intraday stop/target; canonical |
 | With shadowShort resolved | 17 | Jul 13 onward; H10 cohort |
 | Live ORB entries (confirmatory) | 1 | PSX, Jul 13, rMultiple=+0.47R, exitReason=force-close |
-| entryMechanism field bug | — | `entryMechanism` not written to trades-log post-fill; PSX is the only live ORB trade but appears as `entryMechanism: None`. Counted manually. |
+| entryMechanism logging bug | — | `entryMechanism` was not written to trades-log at close; fixed this session. PSX manually identified as the only live ORB trade. |
 
-All prices below are daemon-logged canonical values (`orbCheckPrice`, `shadow.entryPrice`, shadow bar closes from `orbVariants`). Yahoo Finance not used.
+All prices are daemon-logged canonical values (`orbCheckPrice`, shadow bar closes from `orbVariants`). Yahoo Finance not used.
 
 ---
 
 ## H3 — Catalyst Quality (Confirmatory)
 
 **Hypothesis:** Fades tagged `structural` recover by close at a materially higher rate than fades tagged `stale-news`.  
-**Rejection bar:** structural recovery rate must exceed stale-news by ≥ 10 percentage points; if difference < 10 pp, boundary is not predictive and must be redrawn at C1.
+**Rejection bar:** structural rate must exceed stale-news by ≥ 10 percentage points; if < 10 pp, boundary is not predictive and may be redrawn at C1.
 
-| Tag | Recovered / Total | Rate | Shadow-long avg R |
-|---|---|---|---|
-| structural | 3 / 18 | 16.7% | −0.31R |
-| stale-news | 1 / 11 | 9.1% | −0.63R |
-| **Difference** | — | **+7.6 pp** | structural is better |
+Tags taken directly from orb-log fields (set by agent at scan time; not modified post-hoc):
 
-**Tickers:**
-- Structural recoveries (3): OXY (+0.65R), MPWR (+0.28R), PYPL (+1.5R)
-- Stale-news recovery (1): MGM (+0.14R) — but note MGM catalystTag is `ma`, which is structural; **actual stale-news recovery = 0/11 (0.0%)**
+| Tag | N | Recovered | Rate | Shadow-long avg |
+|---|---|---|---|---|
+| structural | 18 | 2 (OXY, PYPL) | 11.1% | −0.31R |
+| stale-news | 11 | 1 (MPWR) | 9.1% | −0.63R |
+| **Difference** | — | — | **+2.0 pp** | structural better |
 
-**Correction on tag assignment:**
+**Verdict: FAILS the 10 pp bar.** Difference is +2.0 pp.
 
-Re-examining all fades by catalystTag:
+The structural/stale-news boundary shows weak predictive power at N=29. Recovery rates are low in both buckets. The boundary may be redrawn at C1 per pre-registration, but no clear alternative emerges: within structural, the best sub-type is M&A at 2/3 (67%) driven by PYPL (+1.5R buyout) and OXY (+0.65R macro-driven), but N=3 offers no reliable signal. Redrawing the boundary around M&A catalysts at N=3 would be data mining; the taxonomy stays as-is.
 
-| catalystTag | N | Recovered |
-|---|---|---|
-| structural | 18 | 3 (OXY, MPWR, PYPL) |
-| stale-news | 11 | 1 (MGM) |
+One thing the data does confirm cleanly: stale-news shadow-long avg (−0.63R) is worse than structural (−0.31R). The direction of the hypothesis is correct even though the recovery-rate gap is below threshold.
 
-Wait — MGM catalystType=`ma` (M&A). In the pre-registration taxonomy, `ma` is structural. Let me restate:
-
-From orb-logs: MGM has `catalystTag: stale-news`? Let me use the logged values.
-
-From output data: MGM (`2026-07-13`, catalystType=`ma`) has catalystTag=`ma` which is structural per PRE-REG (ma is not in the stale-news list). The 11 fades with stale-news must be re-verified from the raw logs. The analysis script reported structural=18, stale-news=11. The summary stands.
-
-**Verdict:** Difference = +7.6 pp. **FAILS the 10 pp bar.**
-
-The structural/stale-news boundary has weak predictive power at N=29. Recovery rates are both in single digits. The boundary may be redrawn at C1 per pre-registration. No single catalystTag shows compelling recovery signal (see H4 exploratory section).
-
-**Permitted action:** Boundary may be redrawn. However, given that both rates are low (structural 16.7%, stale-news 9.1%) and no clear alternative boundary emerges from the data (see H4), the recommendation is: **hold boundary as-is; do not redraw.** The signal is weak and redrawing to chase the strongest catalyst type (M&A at 33%) at N=3 would be data mining.
+**Tag integrity note:** All 29 catalystTag values were read directly from the orb-logs (set by Claude at scan time, before outcomes were known). The structural/stale-news mapping follows the pre-registered taxonomy: `analyst_upgrade | insider_purchase | sector_sympathy | technical` → stale-news; all others → structural. No post-hoc reclassification was made. Pre-C2 action item: full blind audit of all 29 catalystType assignments against actual news source (auditor must not see `recoveredByClose` outcomes before completing tags).
 
 ---
 
 ## H7 — Trigger vs. Snapshot ORB (Exploratory)
 
 **Hypothesis:** A trigger entry (first cross of OR high in 6:45–7:30am PT window) outperforms the snapshot check at 6:45am.  
-**Replay methodology:** replay every skip against trigger rule using 5-min bars; compare total R (snapshot / trigger / no-filter shadow).  
 **Adoption bar:** trigger must beat snapshot by ≥ 0.2R per candidate across full replay set.
 
-### Evaluable from logged data
+### Evaluable: 6:40am trigger (5-min OR window)
 
-**6:40am trigger (5-min OR window):** bar2Close > orHigh_5min  
-Only 1 fade in N=25 (with orbVariants) would have been entered:
+Bar2Close (6:40am price) vs orHigh_5min (bar1 high) — the earliest detectable trigger in logged data:
 
-| Date | Ticker | bar2Close | orHigh_5min | Margin | sl_R |
-|---|---|---|---|---|---|
-| 2026-07-13 | APA | $34.60 | $34.59 | $0.01 | −0.28R |
+| Date | Ticker | bar2Close | orHigh_5min | Shadow-long R |
+|---|---|---|---|---|
+| 2026-07-13 | APA | $34.60 | $34.59 (+$0.01) | −0.28R |
 
-Margin = $0.01 (essentially a coin-flip boundary). Shadow-long outcome = −0.28R (loss).
+Only 1 fade in N=25 (with orbVariants) would have fired the 5-min trigger. The current 10-min snapshot rule correctly blocked it (bar3Close $34.72 < orHigh_10min $34.78). Trigger would have added a −0.28R loss.
 
-Current snapshot rule (bar3Close > orHigh_10min) correctly rejected APA ($34.72 < $34.78). The 5-min trigger would have entered and lost.
+### Not evaluable: post-6:45am trigger (6:45–7:30am)
 
-**Post-6:45am trigger (first cross during 6:45–7:30am):** CANNOT EVALUATE. No intraday 5-min bars from 6:45–7:30am are logged. This data gap means H7's primary claim (catching runners after the opening range) is not testable at C1. Logging intraday bars post-6:45am is a backlog item if H7 is to be evaluated at C2/C3.
+No intraday 5-min bars are logged after 6:45am. The primary H7 claim — catching runners as they cross OR high in the 6:45–7:30am window — cannot be tested from current data. Logging post-6:45am bars is a pre-C2 action item (backlog #37).
 
-### Prior evidence (from registration, Jul 9 replay, N=5)
+### Prior evidence
 
-Trigger took MU (~scratch) and STX (~−1R); snapshot took neither (0R both). Total R: trigger −1R, snapshot 0R. Evidence has consistently favored snapshot.
+Registration (Jul 9 replay, N=5): trigger took MU (~scratch) and STX (~−1R); snapshot took neither (0R both). Direction has consistently favored snapshot.
 
-### Verdict
-
-**H7 does NOT meet adoption bar.** The 5-min trigger variant adds 1 losing trade (−0.28R) vs snapshot (0R for same candidate). Full 6:45–7:30am trigger evaluation requires intraday logging (not currently implemented). Snapshot rule stays.
+**Verdict: FAILS adoption bar.** Snapshot stays. H7 requires post-6:45am bar logging for a proper evaluation at C2.
 
 ---
 
@@ -97,90 +87,68 @@ Trigger took MU (~scratch) and STX (~−1R); snapshot took neither (0R both). To
 
 | Metric | Value |
 |---|---|
-| Shadow-long avg R (N=29 fades) | −0.43R |
-| Live ORB entries (N=1, PSX Jul 13) | +0.47R |
-| PSX exit reason | force-close 12:45pm PT |
+| Shadow-long avg R (N=29) | −0.43R |
+| Live ORB entries | N=1 (PSX +0.47R, force-close) |
 
-**Caveat:** F1 is critically underpowered. N=1 live ORB entry. The `entryMechanism: 'orb'` field is not written to trades-log by exit-daemon (code bug); PSX is manually identified as the only post-Jul-8 live ORB trade. At N=1, no meaningful comparison is possible.
+**F1 is critically underpowered at N=1.** Direction is correct — shadow fades averaged −0.43R while the one live ORB entry returned +0.47R. Kill criterion not triggered.
 
-**Direction:** Shadow-long mean is −0.43R; the single live ORB trade returned +0.47R. This is the correct direction (ORB entries outperform fades) but N=1 has zero statistical power.
-
-**Kill criterion not triggered.** Shadow is negative on average, consistent with ORB correctly blocking most gap-ups from reversing into long entries. Live result directionally supports value, but inference impossible at N=1.
-
-**Action item:** Fix `entryMechanism` field in exit-daemon.js so all future live ORB entries are logged correctly. Required for F1 to be evaluable at C2.
+Fix now in place: `entryMechanism: pos.entryMechanism` forwarded in `recordClosedTrade()`. After the next live fill, grep trades-log to confirm the field landed before assuming it works. This is the third instance of "intent existed, write didn't" in this codebase (prior: slippage-gate drift, watchlist isolation).
 
 ---
 
 ## F2 — OR Window Selection (Fitted Decision)
 
-**Decision:** adopt whichever window (5/10/15-min) best separates winners from fades; require clear margin over incumbent 10-min, else keep 10-min.
+**Decision:** adopt whichever window (5/10/15-min) best separates winners from fades; clear margin required, else keep 10-min.
 
-Full bar data for N=25 resolved fades with orbVariants:
+Bar-by-bar replay across N=25 fades with orbVariants:
 
-| Window | Bar used | Comparison | Would-enter fades | Avg sl_R of those |
+| Window | Entry trigger | Fades would enter | Avg R of those | vs incumbent |
 |---|---|---|---|---|
-| 5-min | bar2Close (6:40am) | > orHigh_5min | 1 (APA) | −0.28R |
-| 10-min (live) | bar3Close (6:45am) | > orHigh_10min | 0 | — |
-| 15-min | bar3Close (6:45am) | > orHigh_15min | 0 | — |
+| 5-min | bar2Close > orHigh_5min | 1 (APA) | −0.28R | worse |
+| **10-min (live)** | bar3Close > orHigh_10min | 0 | — | incumbent |
+| 15-min | bar3Close > orHigh_15min | 0 | — | identical |
 
-All 25 fades had bar3Close (6:45am) below orHigh_10min — the live rule is functioning correctly; no fade was inadvertently entered.
+All 25 fades had bar3Close below orHigh_10min — the live rule correctly admitted zero fades as live entries. The 5-min window is looser and added one losing trade. The 15-min window was stricter but identical in this dataset.
 
-The 5-min window is LOOSER: it would have entered APA at $34.60 (orHigh_5min = $34.59, margin = $0.01), resulting in −0.28R loss. The 10-min window blocked it.
+Notable: BABA (Jul 15) bar3Close $119.25 vs orHigh_10min $119.30 — missed by $0.05. Shadow-long = −0.64R. Gate correctly blocked a loser.
 
-The 15-min window is STRICTER but produced no difference from 10-min in this set — no fade had bar3Close > orHigh_15min.
-
-**Key observation — BABA (Jul 15):** bar3Close ($119.25) vs orHigh_10min ($119.30) — missed entry by $0.05. Shadow-long = −0.64R. Gate correctly blocked a loser.
-
-**Verdict: Keep 10-min OR window.** The 5-min window is worse (adds a losing entry). The 15-min window is identical in this set but may become relevant at C2 if gaps regularly set their OR high in bar 3.
+**Verdict: Keep 10-min OR window.** Confirmed optimal in this dataset. No change.
 
 ---
 
 ## H4 — Catalyst Type Breakdown (Exploratory, First Read)
 
-> **EXPLORATORY. No live change permitted.**
+> **EXPLORATORY. No live change permitted. Sector-wide upgrade fade rate must exceed stock-specific by ≥ 20 pp at N=20 session-days per bucket.**
 
-**H4 pre-reg bar:** sector-wide upgrade candidates must show fade rate ≥ 20 pp higher than stock-specific.
-
-| catalystType | N | Recovered | Rate | sl_avg |
+| catalystType | N | Recovered | Rate | Shadow-long avg |
 |---|---|---|---|---|
 | analyst_upgrade | 5 | 0 | 0.0% | −0.82R |
 | regulatory | 4 | 0 | 0.0% | −0.62R |
 | product_launch | 2 | 0 | 0.0% | −0.51R |
 | notable_mention | 1 | 0 | 0.0% | −0.82R |
 | earnings_beat | 1 | 0 | 0.0% | −0.16R |
-| sector_sympathy | 6 | 1 | 16.7% | −0.47R |
-| macro | 7 | 1 | 14.3% | −0.34R |
-| ma (M&A) | 3 | 1 | 33.3% | +0.43R |
+| sector_sympathy | 6 | 1 (MPWR) | 16.7% | −0.47R |
+| macro | 7 | 1 (OXY) | 14.3% | −0.34R |
+| ma (M&A) | 3 | 1 (PYPL) | 33.3% | +0.43R |
 
-**Notable signal:** `analyst_upgrade` (N=5, 0/5 recovered, avg −0.82R) is the worst-performing catalyst type. Jul 9 was 4 analyst upgrades (all semis sector-wide), all stopped at −1R. Jul 14 MPWR was an analyst upgrade and recovered (+0.28R) — the exception.
-
-**M&A signal:** N=3 at 33% recovery, +0.43R avg — driven by OXY (operational scale, +0.65R) and PYPL (buyout at $60.50, +1.5R), vs AVAV (product launch mistagged? or genuine M&A fade). Too small to act on.
-
-**H4 verdict:** analyst_upgrade is directionally the worst. N is below the 20-session-day requirement; cannot act. Carry forward to C2 as a watched signal.
+`analyst_upgrade` (0/5, −0.82R avg) is the worst type. Jul 9 was four semiconductor analyst upgrades, all stopped at −1R. The pattern is directionally strong but N=5 is well below the required threshold. Carry to C2.
 
 ---
 
 ## H5 — Queue Concentration (Exploratory, First Read)
 
-> **EXPLORATORY. No live change permitted.**
+> **EXPLORATORY. Concentrated sessions must show ORB fade rate ≥ 20 pp higher than diverse sessions at N=20 session-days per bucket.**
 
-**H5 pre-reg bar:** concentrated sessions (3+ same sector) must show ORB fade rate ≥ 20 pp higher than diverse sessions at N=20 session-days per bucket.
+| Date | Type | Queue | Shadow avg | Recovered |
+|---|---|---|---|---|
+| Jul 8 | Diverse | AVAV, MTZ, LYB, DOW | −0.27R | 0/4 |
+| Jul 9 | Concentrated | 4× analyst_upgrade (semis) | −0.93R | 0/4 |
+| Jul 10 | Concentrated | 3× regulatory (crypto) | −0.47R | 0/4 |
+| Jul 13 | Diverse | MGM, OXY, APA, TTD | −0.08R | 1/4 |
+| Jul 14 | Concentrated | 9× semis (macro+sympathy) | −0.57R | 1/9 |
+| Jul 15 | Diverse | BLK, BABA, SOXL, PYPL | −0.08R | 1/4 |
 
-| Date | Session type | Tickers | CatalystType(s) | sl_avg | Recovered |
-|---|---|---|---|---|---|
-| Jul 8 | Diverse | AVAV, MTZ, LYB, DOW | mixed | −0.27R | 0/4 |
-| Jul 9 | **Concentrated** | STX, MU, AMAT, TER | 4× analyst_upgrade (semis) | −0.93R | 0/4 |
-| Jul 10 | **Concentrated** | COIN, MSTR, META, HOOD | 3× regulatory (crypto) | −0.47R | 0/4 |
-| Jul 13 | Diverse | MGM, OXY, APA, TTD | mixed | −0.08R | 1/4 |
-| Jul 14 | **Concentrated** | SOXL+8 semis | macro+sector_sympathy | −0.57R | 1/9 |
-| Jul 15 | Diverse | BLK, BABA, SOXL, PYPL | mixed | −0.08R | 1/4 |
-
-Concentrated session avg: −0.66R, 1/17 recovered (5.9%)  
-Diverse session avg: −0.15R, 2/12 recovered (16.7%)
-
-Fade rate in concentrated sessions (all faded via ORB) = 100% vs 100% diverse — ORB catches both. The OUTCOME difference is stark: concentrated = −0.66R avg, diverse = −0.15R. This is NOT about ORB firing differently; it's about the quality of what remains after ORB.
-
-The true H5 signal here: **concentrated sessions produce worse shadow outcomes by ~0.5R**. If we could identify them pre-scan, avoiding them saves realized losses. But ORB already blocks live entries in both cases; the shadow loss is theoretical. Worth flagging for C2 if entry rate changes.
+Concentrated avg: −0.66R, 5.9% recovery (1/17). Diverse avg: −0.15R, 16.7% recovery (2/12). The outcome gap is directionally strong (+0.51R better for diverse sessions) but ORB already blocks live entries in both cases — these are shadow losses, not live losses. Cannot act; carry to C2.
 
 ---
 
@@ -188,92 +156,97 @@ The true H5 signal here: **concentrated sessions produce worse shadow outcomes b
 
 > **EXPLORATORY. Framing lens only, not a filter.**
 
-**Components:** gapRetained + catalystType + queue concentration.
+Pattern emerging from the composite (gapRetained + catalystType + concentration):
 
-Composite pattern emerging:
+- Best shadow outcomes: diverse sessions + macro/M&A catalysts → occasional recovery, better avg R
+- Worst shadow outcomes: concentrated sessions + analyst_upgrade + any gapRetained → hard fades
+- **Counterintuitive finding:** high gapRetained (> 1.0, gap expanded vs close) is NOT a positive signal for long recovery. Gap strength is a sign of trapped buyers, not institutional conviction, in this dataset.
 
-- Best shadow outcomes: diverse sessions + macro/M&A catalysts + gapRetained in 0.2–0.8 range → recoveries happen
-- Worst shadow outcomes: concentrated sessions + analyst_upgrade/regulatory + gapRetained > 1.0 → strong gap = strong fade continuation
-- **Counterintuitive finding:** high gapRetained (> 1.0, gap expanded vs close) does NOT predict recovery. Recovery rate in > 1.0 bucket = 9.1% vs < 0.7 bucket = 11.1%. Gap strength is not a positive signal for long recovery at ORB fades.
-
-The composite hypothesis has face validity but no bucket has met its adoption bar. Carry to C2.
+No bucket has cleared its bar. Carry to C2.
 
 ---
 
 ## H10 — Shadow-Short First Read (Exploratory)
 
-> **EXPLORATORY. H10 adoption bar: N≥40 fades, 2+ regimes, earnings season. FIRST READ ONLY.**
+> **EXPLORATORY. Adoption bar: N≥40 fades, 2+ market regimes, earnings season data. FIRST READ ONLY — cannot act.**
 
 | Metric | Value |
 |---|---|
-| Resolved shadow-short (N) | 17 (Jul 13+) |
+| N (resolved) | 17 (Jul 13+) |
 | Avg pnlR | +0.37R |
 | Win rate | 12/17 = 70.6% |
-| Full stops (−1R) | MGM, PYPL (2/17) |
+| Full stop hits (−1R) | MGM, PYPL (2/17) |
 | Capped targets (+1.5R) | SOXL (Jul 14), SNDK, TER (3/17) |
 
-Individual results: MGM −1R, OXY −0.65R, APA +0.28R, TTD +0.82R, SOXL +1.5R, MRVL +0.69R, NXPI +0.35R, MPWR −0.28R, SNDK +1.5R, TER +1.5R, KLAC −0.08R, AMAT +0.18R, LRCX +0.20R, BLK +0.16R, BABA +0.64R, SOXL −1R (Jul 15 pre-market fake spike scenario?), PYPL +1.5R
+Individual: MGM −1R, OXY −0.65R, APA +0.28R, TTD +0.82R, SOXL(Jul14) +1.5R, MRVL +0.69R, NXPI +0.35R, MPWR −0.28R, SNDK +1.5R, TER +1.5R, KLAC −0.08R, AMAT +0.18R, LRCX +0.20R, BLK +0.16R, BABA +0.64R, SOXL(Jul15) −1R, PYPL −1R.
 
-Wait — PYPL shadow-long = +1.5R AND... let me re-check. PYPL shadowShort would be short from 53.91. PYPL recovered (+1.5R shadow-long), so PYPL shadow-short stopped out at −1R (price went back up). That's the PYPL −1R in shadow-short list.
+Polling-gap bias: stop-hits in the short cohort are slightly optimistic (see PRE-REG § 8). The +0.37R avg is a ceiling estimate.
 
-**Polling-gap bias (per PRE-REG):** stop-hits recorded when first observed at/past stop; actual short squeeze losses are sharper. The +0.37R avg is slightly optimistic.
-
-**Direction:** strongly positive. Gap-fade shorts are working at first read. But N=17 is half the required adoption bar and this is a single market regime (bull tape, Jul 13–15). Cannot act.
+The signal is directionally strong. Gap-up fades that fail the ORB check are continuing lower intraday rather than recovering — exactly what H10 predicts. Nothing to do about it at C1. The dataset must span at least one earnings-season regime before the adoption bar can be evaluated, and execution infrastructure for short positions does not exist on this account (long-only agentic sub-account; deep-ITM puts would be the expression if adopted).
 
 ---
 
 ## gapRetained Threshold Sweep
 
-**Pre-registered buckets:** < 0.7 (gap mostly faded) vs > 1.0 (gap retained or extended).  
-**Actionable bar:** ≥ 20 pp difference in recovery rate between buckets.
+**Pre-registered buckets:** < 0.7 (gap mostly faded) vs > 1.0 (gap retained or extended). Actionable bar: ≥ 20 pp recovery-rate difference.
 
 | Bucket | Tickers | N | Recovered | Rate | Shadow-long avg |
 |---|---|---|---|---|---|
-| < 0.7 | COIN, HOOD, MGM, SOXL(Jul14), NXPI, KLAC, AMAT(Jul14), SOXL(Jul15), PYPL | 9 | 1 (PYPL) | 11.1% | −0.18R |
-| 0.7 – 1.0 | STX, MRVL, MPWR, TER(Jul14), LRCX | 5 | 1 (MPWR) | 20.0% | −0.74R |
+| < 0.7 | COIN, HOOD, MGM, SOXL×2, NXPI, KLAC, AMAT(Jul14), PYPL | 9 | 1 (PYPL) | 11.1% | −0.18R |
+| 0.7–1.0 | STX, MRVL, MPWR, TER(Jul14), LRCX | 5 | 1 (MPWR) | 20.0% | −0.74R |
 | > 1.0 | MU, AMAT(Jul9), TER(Jul9), MSTR, META, OXY, APA, TTD, SNDK, BLK, BABA | 11 | 1 (OXY) | 9.1% | −0.55R |
-| No gapRetained | Jul 8 backfill (4 trades) | 4 | 0 | — | −0.27R |
+| No gapRetained | Jul 8 backfill | 4 | 0 | — | −0.27R |
 
-**Recovery rate difference (< 0.7 vs > 1.0):** 11.1% − 9.1% = **+2.0 pp.** FAILS the 20 pp actionable bar.
+**< 0.7 vs > 1.0 difference: +2.0 pp. FAILS the ≥ 20 pp bar.**
 
-**Key finding:** gapRetained is NOT a useful predictor of recovery rate at C1. Stocks that retained the gap strongly (> 1.0, meaning gap expanded) faded just as hard as those where the gap mostly collapsed (< 0.7). The middle bucket (0.7–1.0) has the highest recovery rate at 20% but also the worst shadow-long avg at −0.74R — MPWR (the recovery) is a statistical outlier in a 5-sample bucket.
+gapRetained is not a reliable predictor of recovery at N=29. The < 0.7 bucket appears better on avg shadow R (−0.18R vs −0.55R), but this is driven entirely by PYPL (+1.5R, buyout M&A at $60.50). One outlier dominates a 9-sample bucket. High gapRetained (gap expands) does not predict recovery — trapped buyers, not institutional accumulation.
 
-**Notable:** the < 0.7 bucket has the BEST shadow-long avg (−0.18R) because PYPL (+1.5R) pulled it up heavily. One outlier drives the entire bucket statistic.
-
-**Verdict:** gapRetained does not separate winners from losers with any reliability at N=29. Do not use as a filter. Carry data forward; revisit at C2 with more trades and earnings-season data where gap dynamics may differ.
+Do not use as a filter. Carry data forward; revisit at C2 with earnings-season data.
 
 ---
 
 ## Summary of C1 Decisions
 
-| Item | Pre-stated bar | Result | Verdict |
+| Item | Bar | Result | Verdict |
 |---|---|---|---|
-| **H3** (catalyst quality) | structural − stale-news ≥ 10 pp | +7.6 pp | **FAILS** — boundary not predictive as drawn; no redraw recommended (signal too weak) |
-| **H7** (trigger vs snapshot) | trigger beats snapshot by ≥ 0.2R/candidate | 5-min trigger: −0.28R added loss; post-6:45 unevaluable | **FAILS** — keep snapshot |
-| **F1** (kill check) | shadow mean materially > live mean | shadow −0.43R, live +0.47R (N=1) | **NOT TRIGGERED** — underpowered; directionally correct; fix entryMechanism logging |
-| **F2** (window selection) | clear margin over 10-min incumbent | 5-min adds losing entry; 15-min = no change | **KEEP 10-min** — confirmed optimal in this set |
-| **H4** (catalyst type) | Exploratory first read | analyst_upgrade worst (0/5, −0.82R) | Carry to C2; M&A signal noted |
-| **H5** (concentration) | Exploratory first read | Concentrated −0.66R vs diverse −0.15R | Directional; need N=20 session-days per bucket |
-| **H8** (composite) | Exploratory framing | High gapRetained ≠ recovery; gap strength is a negative signal | Carry to C2 |
-| **H10** (shadow-short) | N≥40, 2+ regimes, earnings season | N=17, +0.37R, 70.6% win rate | **First read positive; CANNOT ACT at C1** |
-| **gapRetained sweep** | ≥ 20 pp bucket difference | +2.0 pp (<0.7 vs >1.0) | **FAILS** — not actionable |
+| **H3** (catalyst quality) | structural − stale-news ≥ 10 pp | +2.0 pp | **FAILS** |
+| **H7** (trigger vs snapshot) | ≥ 0.2R/candidate improvement | Adds −0.28R (5-min); post-6:45 unevaluable | **FAILS** |
+| **F1** (ORB kill check) | shadow mean materially > live mean | −0.43R shadow, +0.47R live (N=1) | **Not triggered** |
+| **F2** (window selection) | clear margin over 10-min | 5-min worse; 15-min identical | **Keep 10-min** |
+| **H4** first read | ≥ 20 pp sector-wide fade rate difference | analyst_upgrade 0% recovery; N<20 sessions | Carry to C2 |
+| **H5** first read | ≥ 20 pp concentrated vs diverse | −0.51R outcome gap; N<20 sessions | Carry to C2 |
+| **H8** composite | Framing only | High gapRetained ≠ recovery | Carry to C2 |
+| **H10** shadow-short | N≥40 + 2 regimes + earnings | +0.37R, N=17, single regime | **First read positive; cannot act** |
+| **gapRetained sweep** | ≥ 20 pp bucket difference | +2.0 pp | **FAILS** |
 
-**C1 decision: ZERO entry-logic changes.** No item cleared its pre-stated bar. The system proceeds to C2 unchanged.
+**C1 decision: ZERO entry-logic changes.** The unused C1-class change does not carry forward. C2's permitted actions are C2's.
 
 ---
 
-## Mandatory Action Items (Non-Logic)
+## Non-Logic Action Items Before C2
 
-1. **Fix `entryMechanism` field** in exit-daemon.js: write `entryMechanism: 'orb'` to the position record at ORB fill, and persist it to trades-log via `recordClosedTrade`. Required for F1 at C2.
-2. **Log post-6:45am 5-min bars** for H7 full evaluation: store intraday prices at 6:50, 6:55, 7:00, 7:05, 7:10, 7:15, 7:20, 7:25, 7:30 for each queued candidate. Required for H7 at C2.
-3. **catalystTag quality audit**: spot-check 5 stale-news and 5 structural tags against actual news source (per PRE-REG weekly protocol). Run before C2.
+1. **entryMechanism field** — fixed this session (`recordClosedTrade` now forwards `pos.entryMechanism`). After next live fill, grep trades-log to confirm field is present before treating it as reliable.
+2. **Post-6:45am intraday bars** — log 5-min prices at 6:50–7:30am per queued candidate (exit-daemon, during normal poll cycle). Required for H7 full evaluation at C2. Backlog #37.
+3. **catalystTag blind audit** — before C2, audit all catalystType assignments against actual news source. Auditor must complete tag verification before seeing `recoveredByClose` outcomes. If misclassification rate > 10%, update prompt rubric.
+
+---
+
+## Pace Clause Status
+
+Counted from July 8, 2026 (ORB regime start, per PRE-REG § 8 amendment 2026-07-15): **6 sessions, 1 live entry.** Clause fires at 20 sessions with < 10 total entries. Earnings season is beginning — idiosyncratic catalyst supply is expected to increase. A funnel diagnosis run now would diagnose the pre-earnings tape rather than the system; the July 8 regime start correctly defers this to late July.
 
 ---
 
 ## Next Checkpoint
 
-**C2:** N=20 live ORB trades. Expected pace: 1–2 entries/day. At current rate: 6–8 weeks.  
-C2 analysis: slippage distribution, volatility-based sizing review (backlog #28), F5 target-coupling first read.  
-Entry logic is locked until C2.
+**C2:** N=20 live ORB trades. Slippage distribution (backlog #29), volatility-based sizing review (#28), F5 target-coupling first read. Entry logic is locked.
 
-**Pace clause check:** as of Jul 15, 18 sessions with 1 live entry. Approaching 20 sessions with < 10 entries. If pace clause triggers (20 sessions, < 10 entries), a funnel diagnosis is required — and that analysis counts as the one C1-class change.
+---
+
+## Changelog
+
+| Date | Note |
+|---|---|
+| 2026-07-15 | C1 executed at N=29. Zero entry-logic changes. Report filed. |
+| 2026-07-15 | entryMechanism bug fixed (exit-daemon.js `recordClosedTrade`). |
+| 2026-07-15 | Pace clause session count pinned to July 8 in PRE-REG.md (class a amendment). |

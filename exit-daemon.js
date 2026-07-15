@@ -642,7 +642,8 @@ async function closePosition(pos, currentPrice, exitReason) {
     signals: pos.signals, setupScore: pos.setupScore, rationale: pos.rationale, catalystType: pos.catalystType || null, regime: pos.regime || null,
     maxFavorableExcursion: pos.maxFavorableExcursion ?? 0,
     maxAdverseExcursion:   pos.maxAdverseExcursion   ?? 0,
-    exitReason, entryTime: pos.entryTime, exitTime: new Date().toISOString(), date: today,
+    exitReason, entryMechanism: pos.entryMechanism || null,
+    entryTime: pos.entryTime, exitTime: new Date().toISOString(), date: today,
     isLive: !DRY_RUN,
     state: TRADE_STATES.CLOSED, stateHistory: pos.stateHistory,
   });
