@@ -1596,5 +1596,9 @@ Design decisions that were changed, and the reasoning behind each removal. Kept 
 
 ---
 
+**Post-6:45am price marks (July 15 2026):** exit-daemon now logs prices at 6:50, 6:55, 7:00, 7:05, 7:10, 7:15, 7:20, 7:25, 7:30am PT for all originally-queued candidates (entered or skipped), stored in `orbLog.marks` under keys 20–60. Required for H7 trigger-entry replay at C2.
+
+**Nightly backup fixed (July 15 2026):** `scripts/backup-output.sh` was pointing to `~/Documents/` (permissions error, silently failing since Jul 11). Fixed to write dated tar.gz archives to iCloud Drive. 75 JSON files, 2.0MB. 90-day retention. The full orb-log + trades-log evidence base now has a daily off-machine copy.
+
 *Last updated: July 15 2026*
 *Built using Claude Code*

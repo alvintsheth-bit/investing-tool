@@ -61,6 +61,9 @@ const PT = {
   MARKET_CLOSE:      13 * 60,        // 1:00pm
 };
 
+// Post-ORB mark schedule: minutes offset from 6:30am → 6:50, 6:55, …, 7:30am (H7 replay data)
+const POST_ORB_MARKS = [20, 25, 30, 35, 40, 45, 50, 55, 60];
+
 // ─── Trade State Machine (mirrors agent.js — no shared lib to keep daemon standalone) ──
 const TRADE_STATES = {
   QUEUED:        'QUEUED',
@@ -682,6 +685,7 @@ async function main() {
   let orb10MinLogged     = false;
   let orbRecoveryLogged  = false;
   let carryOversResolved = false;
+  const postOrbMarksLogged = new Set();
   let consecutiveQuoteFailures = {};  // ticker → count
 
   while (true) {
@@ -807,6 +811,18 @@ async function main() {
       // Process any immediate exits triggered by OR stop crossing
       for (const { pos, price } of immediateExits) {
         await closePosition(pos, price, `or-stop-immediate ($${price.toFixed(2)} ≤ OR low $${pos.stopPrice})`);
+      }
+    }
+
+    // ── Post-ORB marks: 6:50am–7:30am (backlog #37, H7 trigger replay data) ──
+    // Log prices for ALL originally-queued candidates (entered or skipped) so
+    // H7 can ask "did any faded candidate cross OR high after 6:45am?"
+    if (openingRangeComputed && orbLog.queued.length) {
+      for (const mark of POST_ORB_MARKS) {
+        if (!postOrbMarksLogged.has(mark) && ptNow >= PT.MARKET_OPEN + mark) {
+          postOrbMarksLogged.add(mark);
+          await logOrbPrices(orbLog.queued, mark);
+        }
       }
     }
 
