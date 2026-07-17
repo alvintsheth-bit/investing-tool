@@ -1600,5 +1600,7 @@ Design decisions that were changed, and the reasoning behind each removal. Kept 
 
 **Nightly backup fixed (July 15 2026):** `scripts/backup-output.sh` was pointing to `~/Documents/` (permissions error, silently failing since Jul 11). Fixed to write dated tar.gz archives to iCloud Drive. 75 JSON files, 2.0MB. 90-day retention. The full orb-log + trades-log evidence base now has a daily off-machine copy.
 
-*Last updated: July 15 2026*
+**Carry-over false-positive on same-day ORB fills (fixed July 17 2026):** `submitOrbEntry()` was using `atomicWrite` with the raw object from `loadOpenPositions()`, which preserves a stale date when `trades-open.json` is empty from the previous day. The OR stop-tightening block (same loop tick, immediately after the fill) then saw `date !== today` with non-empty positions and tagged the ORB fill as `carryOver:true`. Since `carryOversResolved` was already `true` (set at 6:30am), the carry-over close logic never fired, and the fast loop skipped all stop/target monitoring for the position all day. Force-close submitted a sell at 12:45pm that Robinhood didn't execute. User had to manually close. Fixed: (1) `submitOrbEntry()` now calls `saveOpenPositions()` (always writes `date: today`); (2) `loadOpenPositions()` now migrates stale dates even on empty files.
+
+*Last updated: July 17 2026*
 *Built using Claude Code*

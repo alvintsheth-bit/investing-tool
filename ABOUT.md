@@ -1676,5 +1676,17 @@ Action items from C1 (non-logic):
 
 ---
 
-*Last updated: July 15 2026*
+### Carry-over false-positive on same-day ORB fills (fixed July 17 2026)
+
+**What it was:** When `trades-open.json` had a stale date but empty positions array (normal state at start of each day), `loadOpenPositions()` in exit-daemon.js would return the old object unchanged — no date migration, because the `if (data.date !== today && data.positions?.length)` condition required non-empty positions to migrate. `submitOrbEntry()` then called `atomicWrite(OPEN_POSITIONS_FILE, openData)` using that raw object, writing the freshly-filled position into the file under yesterday's date. The very next call to `loadOpenPositions()` (in the OR stop-tightening block, same loop tick) saw `date !== today` with a non-empty positions array — tagged the new ORB fill as `carryOver: true` and wrote it back.
+
+**Why it was wrong:** By 6:45am, `carryOversResolved` had already been set `true` (at market open, 6:30am). The carry-over close logic fires once and never re-runs. So the tagged position was never closed by the daemon; the fast loop just printed "carry-over — will close at market open" every 45 seconds and skipped all stop/target monitoring. Force-close submitted a sell at 12:45pm but Robinhood did not execute it. User had to manually sell COP. Trade logged as -0.98R.
+
+**What was fixed:**
+1. `submitOrbEntry()` now calls `saveOpenPositions(currentPositions)` instead of `atomicWrite(OPEN_POSITIONS_FILE, openData)`. `saveOpenPositions` always writes `{ date: today, positions }`, so the stale date can never be re-introduced by an ORB fill.
+2. `loadOpenPositions()` in exit-daemon.js now migrates stale dates even when the positions array is empty — normalizes the file on the first read regardless of whether there are positions to carry over.
+
+---
+
+*Last updated: July 17 2026*
 *Built by Alvint Sheth using Claude Code*
