@@ -99,9 +99,12 @@ function loadOpenPositions() {
   if (!existsSync(OPEN_POSITIONS_FILE)) return { date: today, positions: [] };
   try {
     const data = JSON.parse(readFileSync(OPEN_POSITIONS_FILE, 'utf-8'));
-    if (data.date !== today && data.positions?.length) {
-      // Carry-over: positions left open from a previous session — tag and migrate
-      const positions = data.positions.map(p => ({ ...p, carryOver: true, carryDate: data.date }));
+    if (data.date !== today) {
+      // Date mismatch — always migrate to today, tag non-empty positions as carry-over.
+      // Also normalizes empty files that have a stale date (prevents false carry-over on ORB fills).
+      const positions = data.positions?.length
+        ? data.positions.map(p => ({ ...p, carryOver: true, carryDate: data.date }))
+        : [];
       atomicWrite(OPEN_POSITIONS_FILE, { date: today, positions });
       return { date: today, positions };
     }
@@ -561,9 +564,11 @@ async function submitOrbEntry(candidate, openPositions) {
     ],
   };
 
-  const openData  = loadOpenPositions();
-  openData.positions.push(posRecord);
-  atomicWrite(OPEN_POSITIONS_FILE, openData);
+  // Use saveOpenPositions (always writes date=today) — not atomicWrite with raw openData,
+  // which would preserve a stale date from an empty file and trigger false carry-over tagging.
+  const { positions: currentPositions } = loadOpenPositions();
+  currentPositions.push(posRecord);
+  saveOpenPositions(currentPositions);
 
   entry.fillPrice = fillPrice; entry.execSlippage = execSlippage; entry.decisionSlippage = decisionSlippage; entry.stopPrice = stopPrice; entry.targetPrice = targetPrice;
   orbLog.entries.push(entry); saveOrbLog();
