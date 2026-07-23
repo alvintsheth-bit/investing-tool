@@ -1688,5 +1688,15 @@ Action items from C1 (non-logic):
 
 ---
 
-*Last updated: July 17 2026*
+### Monitor early-check false-positive on ORB-queued days (fixed July 23 2026)
+
+**What it was:** The 6:15am "Silent Failure" check in `monitor.js` (`checkSilentFailure()`) looked at two files to decide whether the agent had evaluated candidates: `trades-log.json` (actual fills) and `rejected-candidates.json` (shadow log entries). On days where the agent queued candidates for the ORB gate (action `"traded"` in `candidates-{today}.json`), neither file has any entries at 6:15am — ORB fills don't happen until 6:45am. So the monitor incorrectly concluded "zero trades AND zero shadow entries" and sent a failure email, even though the agent ran correctly (July 23 2026: 9 earnings-beat candidates queued, best day yet).
+
+**Why it was wrong:** The monitor's "agent evaluated" signal was too narrow. It treated only closed fills and explicit rejections as evidence of activity, ignoring the agent's main output on ORB days: the classified candidates file.
+
+**What was fixed:** `checkSilentFailure()` in `monitor.js` now also reads `candidates-{today}.json` and counts entries with `action === 'traded'` or `action === 'shadow_logged'`. If any exist, the check passes. The failure fires only if all three sources are empty — a genuine silent failure where the agent either never ran or classified nothing.
+
+---
+
+*Last updated: July 23 2026*
 *Built by Alvint Sheth using Claude Code*

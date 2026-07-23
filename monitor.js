@@ -101,7 +101,20 @@ function checkSilentFailure(screenerFile) {
     } catch {}
   }
 
-  if (tradesToday === 0 && rejectedToday === 0) {
+  // Check for agent-classified candidates today (queued for ORB or shadow-logged).
+  // These exist before any fills — agent writes candidates-YYYY-MM-DD.json at ~6am.
+  const candPath = join(OUTPUT_DIR, `candidates-${today}.json`);
+  let candidatesEvaluatedToday = 0;
+  if (existsSync(candPath)) {
+    try {
+      const cd = JSON.parse(readFileSync(candPath, 'utf-8'));
+      candidatesEvaluatedToday = (cd.candidates || []).filter(
+        c => c.action === 'traded' || c.action === 'shadow_logged'
+      ).length;
+    } catch {}
+  }
+
+  if (tradesToday === 0 && rejectedToday === 0 && candidatesEvaluatedToday === 0) {
     const tickers = gapUpCandidates.map(c => `${c.ticker}(+${c.gapPct}%)`).join(', ');
     return `❌ Silent Failure ${gapUpCandidates.length} gap-up candidate(s) qualified [${tickers}] but agent placed ZERO trades AND logged ZERO shadow entries — likely internal error (balance, API, or code gate). Check output/logs/analyze.log immediately.`;
   }

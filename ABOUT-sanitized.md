@@ -1602,5 +1602,7 @@ Design decisions that were changed, and the reasoning behind each removal. Kept 
 
 **Carry-over false-positive on same-day ORB fills (fixed July 17 2026):** `submitOrbEntry()` was using `atomicWrite` with the raw object from `loadOpenPositions()`, which preserves a stale date when `trades-open.json` is empty from the previous day. The OR stop-tightening block (same loop tick, immediately after the fill) then saw `date !== today` with non-empty positions and tagged the ORB fill as `carryOver:true`. Since `carryOversResolved` was already `true` (set at 6:30am), the carry-over close logic never fired, and the fast loop skipped all stop/target monitoring for the position all day. Force-close submitted a sell at 12:45pm that Robinhood didn't execute. User had to manually close. Fixed: (1) `submitOrbEntry()` now calls `saveOpenPositions()` (always writes `date: today`); (2) `loadOpenPositions()` now migrates stale dates even on empty files.
 
-*Last updated: July 17 2026*
+**Monitor early-check false-positive on ORB-queued days (fixed July 23 2026):** The 6:15am "Silent Failure" check in `monitor.js` only looked at `trades-log.json` (fills) and `rejected-candidates.json` (shadows) to decide if the agent had evaluated candidates. On ORB days at 6:15am, neither file has entries yet — fills don't happen until 6:45am. So on July 23 (9 earnings-beat candidates queued: ROP, URI, DGX, RTX, WST, NOW, ALLE, TMO, CSX), the check incorrectly fired and sent a false failure email. Fixed: `checkSilentFailure()` now also reads `candidates-{today}.json`; if any entry has `action === 'traded'` or `action === 'shadow_logged'`, the check passes.
+
+*Last updated: July 23 2026*
 *Built using Claude Code*
