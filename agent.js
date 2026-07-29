@@ -77,7 +77,8 @@ const OPEN_POSITIONS_FILE  = join(OUTPUT_DIR, 'trades-open.json');
 const TRADES_LOG_FILE      = join(OUTPUT_DIR, 'trades-log.json');
 const SIGNAL_WEIGHTS_FILE  = join(OUTPUT_DIR, 'signal-weights.json');
 const WATCHLIST_FILE       = join(OUTPUT_DIR, 'watchlist-tomorrow.json');
-const CIRCUIT_BREAKER_FILE = join(OUTPUT_DIR, 'circuit-breaker.json');
+const CIRCUIT_BREAKER_FILE    = join(OUTPUT_DIR, 'circuit-breaker.json');
+const CONSEC_LOSS_RESET_FILE  = join(OUTPUT_DIR, 'consec-loss-reset.json');
 const QUEUED_TRADES_FILE   = join(OUTPUT_DIR, 'queued-trades.json');
 
 // ─── Trade State Machine (item 35) ───────────────────────────────────────────
@@ -376,11 +377,20 @@ function checkMaxConcurrent(openPositions) {
   return { blocked: false };
 }
 
-// Item 21: pause if last 3 completed trades are all losses
+// Item 21: pause if last 3 completed trades are all losses.
+// Clears automatically once a winning trade is logged, or manually via: node agent.js reset-consecutive-losses
 function checkConsecutiveLosses() {
   const log = loadTradesLog();
   const recent = log.trades.filter(t => t.pnl !== null).slice(-3);
   if (recent.length >= 3 && recent.every(t => t.pnl < 0)) {
+    // Allow manual reset: if reset was issued after the most recent loss, unblock
+    if (existsSync(CONSEC_LOSS_RESET_FILE)) {
+      try {
+        const rs = JSON.parse(readFileSync(CONSEC_LOSS_RESET_FILE, 'utf-8'));
+        const lastLossTime = new Date(recent[2].exitTime).getTime();
+        if (new Date(rs.resetAt).getTime() > lastLossTime) return { blocked: false };
+      } catch {}
+    }
     return { blocked: true, reason: '3 consecutive losses — paused for manual review before next entry' };
   }
   return { blocked: false };
@@ -2340,6 +2350,23 @@ async function main() {
     return;
   }
 
+  if (MODE === 'reset-consecutive-losses') {
+    const log = loadTradesLog();
+    const recent = log.trades.filter(t => t.pnl !== null).slice(-3);
+    if (recent.length < 3 || !recent.every(t => t.pnl < 0)) {
+      console.log('[reset-consecutive-losses] No active consecutive-loss block — nothing to reset.');
+      return;
+    }
+    const lossTickers = recent.map(t => t.ticker).join(' → ');
+    atomicWrite(CONSEC_LOSS_RESET_FILE, {
+      resetAt: new Date().toISOString(),
+      acknowledgedLosses: recent.map(t => ({ ticker: t.ticker, date: t.date, rMultiple: t.rMultiple })),
+    });
+    console.log(`[reset-consecutive-losses] ✅ Reset acknowledged. Losses were: ${lossTickers}`);
+    console.log('[reset-consecutive-losses] Trading will resume on next scan run.');
+    return;
+  }
+
   // scan uses Yahoo-backed check (can fail open on calendar trading days)
   // force-close, check, eod use calendar-only check — never blocked by API issues
   const isScan = MODE === 'scan';
@@ -2353,7 +2380,7 @@ async function main() {
   if (MODE === 'check')       return runCheck();
   if (MODE === 'force-close') return runForceClose();
   if (MODE === 'eod')         return runEOD();
-  console.error(`Unknown mode: ${MODE}. Use: scan | check | force-close | eod | reset-circuit`);
+  console.error(`Unknown mode: ${MODE}. Use: scan | check | force-close | eod | reset-circuit | reset-consecutive-losses`);
   process.exit(1);
 }
 
